@@ -68,7 +68,8 @@ body { background: var(--paper); color: var(--ink); font: 15px/1.45 var(--body);
 header.brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .brand h1 { margin: 0; font: 700 30px/1 var(--display); letter-spacing: .01em; }
 .brand h1 { display: flex; align-items: center; gap: 10px; }
-.brand h1 .logo { width: 40px; height: 40px; flex: none; border-radius: 50%; }
+.brand h1 .logo { width: 64px; height: 64px; flex: none; border-radius: 50%; }
+.brand h1 .by { align-self: flex-end; margin-bottom: 4px; font: 500 12px/1 var(--mono); letter-spacing: .04em; color: var(--muted); }
 .brand h1 .name span { color: var(--stake); }
 .brand p { margin: 4px 0 0; color: var(--muted); font-size: 13.5px; max-width: 40ch; }
 .brand small { font: 500 11px/1 var(--mono); color: var(--muted); }
@@ -246,10 +247,10 @@ body.pv-open { overflow: hidden; }
     <div class="panel-inner">
       <header class="brand">
         <div>
-          <h1><img src="assets/logo.png" alt="" width="40" height="40" class="logo"><span class="name">Expor<span>Topo</span></span></h1>
+          <h1><img src="assets/logo.png" alt="" width="64" height="64" class="logo"><span class="name">Expor<span>Topo</span></span><small class="by">By CHB</small></h1>
           <p>Export des données publiques IGN en Lambert-93 / NGF-IGN69</p>
         </div>
-        <small id="appVersion">v1.1 · MIT</small>
+        <small id="appVersion">v1.2 · MIT</small>
       </header>
 
       <section class="step" aria-labelledby="s1">

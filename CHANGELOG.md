@@ -1,5 +1,9 @@
 # Journal des versions — ExporTopo
 
+## v1.2 — 23/10/2026
+- Logo agrandi à côté du titre (64 px au lieu de 40 px).
+- Mention « By CHB » à côté du nom ExporTopo.
+
 ## v1.1 — 23/10/2026
 - Nouveau nom : **ExporTopo** (fichier à ouvrir : `ExporTopo.html`), logo à côté du titre, orange RVB 220/110/45.
 - Sous-titre : « Export des données publiques IGN en Lambert-93 / NGF-IGN69 ».
