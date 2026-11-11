@@ -1,5 +1,8 @@
 # Journal des versions — ExporTopo
 
+## v1.3 — 11/11/2026
+- Onglets en haut du panneau pour passer d'ExporTopo (terrain naturel) à ExporPaysage (insertion paysagère 3D) et inversement.
+
 ## v1.2 — 23/10/2026
 - Logo agrandi à côté du titre (64 px au lieu de 40 px).
 - Mention « By CHB » à côté du nom ExporTopo.

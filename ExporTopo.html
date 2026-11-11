@@ -65,6 +65,13 @@ body { background: var(--paper); color: var(--ink); font: 15px/1.45 var(--body);
   #map { order: 1; height: 52vh; }
 }
 
+.apps { display: grid; grid-template-columns: 1fr 1fr; margin: 0 0 14px; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+.apps a { display: grid; gap: 3px; padding: 8px 10px; background: var(--sheet); color: var(--ink); text-decoration: none; font: 700 15px/1 var(--display); letter-spacing: .01em; }
+.apps a + a { border-left: 1px solid var(--rule); }
+.apps a small { font: 400 11.5px/1.2 var(--mono); color: var(--muted); letter-spacing: 0; }
+.apps a:hover { background: var(--paper); }
+.apps a[aria-current="page"] { background: var(--stake); color: #fff; }
+.apps a[aria-current="page"] small { color: rgba(255,255,255,.85); }
 header.brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .brand h1 { margin: 0; font: 700 30px/1 var(--display); letter-spacing: .01em; }
 .brand h1 { display: flex; align-items: center; gap: 10px; }
@@ -245,12 +252,13 @@ body.pv-open { overflow: hidden; }
 <div class="app">
   <aside class="panel">
     <div class="panel-inner">
+      <nav class="apps" aria-label="Outils"><a href="https://pertexo.github.io/ExporTopo/ExporTopo.html" aria-current="page">ExporTopo<small>Terrain naturel (TN)</small></a><a href="https://pertexo.github.io/ExporPaysage/ExporPaysage.html">ExporPaysage<small>Insertion paysagère 3D</small></a></nav>
       <header class="brand">
         <div>
           <h1><img src="assets/logo.png" alt="" width="64" height="64" class="logo"><span class="name">Expor<span>Topo</span></span><small class="by">By CHB</small></h1>
           <p>Export des données publiques IGN en Lambert-93 / NGF-IGN69</p>
         </div>
-        <small id="appVersion">v1.2 · MIT</small>
+        <small id="appVersion">v1.3 · MIT</small>
       </header>
 
       <section class="step" aria-labelledby="s1">
