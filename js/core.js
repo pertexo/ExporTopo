@@ -11,7 +11,7 @@
   'use strict';
 
   /** Numéro de version unique (interface, LandXML, LISEZMOI). À incrémenter à chaque modification. */
-  const VERSION = '1.3';
+  const VERSION = '1.4';
   const NODATA = -99999;
 
   function isValid(z) {
@@ -321,6 +321,7 @@
     const w = g.w, h = g.h, d = g.data;
     const buckets = new Map(); // niveau k -> tableau plat [e1, e2, e1, e2, ...]
     const eps = 1e-9;
+    const lv = opts.levels || null;          // niveaux explicites (au lieu d'une équidistance)
     const H = (c, r) => (r * w + c) * 2;       // arête horizontale (c,r)-(c+1,r)
     const V = (c, r) => (r * w + c) * 2 + 1;   // arête verticale (c,r)-(c,r+1)
 
@@ -329,9 +330,9 @@
         const tl = d[r * w + c], tr = d[r * w + c + 1], br = d[(r + 1) * w + c + 1], bl = d[(r + 1) * w + c];
         if (!isValid(tl) || !isValid(tr) || !isValid(br) || !isValid(bl)) continue;
         const mn = Math.min(tl, tr, br, bl), mx = Math.max(tl, tr, br, bl);
-        const k0 = Math.ceil((mn - eps) / interval), k1 = Math.floor((mx - eps) / interval);
+        const k0 = lv ? 0 : Math.ceil((mn - eps) / interval), k1 = lv ? lv.length - 1 : Math.floor((mx - eps) / interval);
         for (let k = k0; k <= k1; k++) {
-          const L = k * interval;
+          const L = lv ? lv[k] : k * interval;
           if (!(mn <= L && L < mx)) continue;
           const cs = (tl > L ? 8 : 0) | (tr > L ? 4 : 0) | (br > L ? 2 : 0) | (bl > L ? 1 : 0);
           if (cs === 0 || cs === 15) continue;
@@ -369,7 +370,7 @@
     const lines = [];
     const keys = Array.from(buckets.keys()).sort((a, b) => a - b);
     for (const k of keys) {
-      const L = k * interval;
+      const L = lv ? lv[k] : k * interval;
       const arr = buckets.get(k);
       const nseg = arr.length / 2;
       const byEdge = new Map();
@@ -417,7 +418,7 @@
         let coords = chain.map((ed) => edgePoint(ed, L));
         if (coords.length < 2) continue;
         coords = simplify(coords, tol);
-        lines.push({ z: Math.round(L * 1000) / 1000, master: Math.abs(k % master) === 0, closed, coords });
+        lines.push({ z: Math.round(L * 1000) / 1000, master: lv ? false : Math.abs(k % master) === 0, closed, coords });
       }
     }
     return lines;
@@ -529,14 +530,53 @@
 
   function DxfWriter() {
     this.layers = new Map();
+    this.ltypes = new Map([['CONTINUOUS', null]]);
+    this.blocks = [];
     this.ents = [];
     this.ext = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
     this.pdsize = 0.1;
   }
 
-  DxfWriter.prototype.layer = function (name, color) {
-    if (!this.layers.has(name)) this.layers.set(name, color || 7);
+  /** Calque : couleur AutoCAD (1-255) et type de trait (CONTINUOUS, TIRETS, POINTILLES, AXE). */
+  DxfWriter.prototype.layer = function (name, color, ltype) {
+    if (!this.layers.has(name)) this.layers.set(name, { color: color || 7, ltype: ltype || 'CONTINUOUS' });
+    if (ltype && ltype !== 'CONTINUOUS') this._ltype(ltype);
     return this;
+  };
+
+  const LTYPE_DEFS = {
+    TIRETS: ['Tirets __ __ __', [1.0, -0.5]],
+    POINTILLES: ['Pointillés . . .', [0.0, -0.3]],
+    AXE: ['Axe ____ _ ____', [2.0, -0.4, 0.4, -0.4]],
+  };
+  DxfWriter.prototype._ltype = function (name) {
+    if (!this.ltypes.has(name) && LTYPE_DEFS[name]) this.ltypes.set(name, LTYPE_DEFS[name]);
+  };
+
+  /** Bloc réutilisable (symbole). entities : chaînes DXF déjà formées, sur le calque 0 pour hériter du calque d'insertion. */
+  DxfWriter.prototype.block = function (name, entities) {
+    this.blocks.push('0\nBLOCK\n8\n0\n2\n' + name + '\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n3\n' + name + '\n' +
+      entities.join('\n') + '\n0\nENDBLK\n8\n0');
+  };
+
+  DxfWriter.prototype.insert = function (name, x, y, z, scale, layer, rot) {
+    this._grow(x, y, z);
+    let e = '0\nINSERT\n8\n' + this._L(layer) + '\n2\n' + name + '\n10\n' + fmt(x, 3) + '\n20\n' + fmt(y, 3) + '\n30\n' + fmt(z, 3) +
+      '\n41\n' + fmt(scale, 4) + '\n42\n' + fmt(scale, 4) + '\n43\n' + fmt(scale, 4);
+    if (rot) e += '\n50\n' + fmt(rot, 3);
+    this.ents.push(e);
+  };
+
+  DxfWriter.prototype.line = function (a, b, layer) {
+    const za = a[2] || 0, zb = b[2] || 0;
+    this._grow(a[0], a[1], za); this._grow(b[0], b[1], zb);
+    this.ents.push('0\nLINE\n8\n' + this._L(layer) + '\n10\n' + fmt(a[0], 3) + '\n20\n' + fmt(a[1], 3) + '\n30\n' + fmt(za, 3) +
+      '\n11\n' + fmt(b[0], 3) + '\n21\n' + fmt(b[1], 3) + '\n31\n' + fmt(zb, 3));
+  };
+
+  DxfWriter.prototype.circle = function (x, y, z, r, layer) {
+    this._grow(x - r, y - r, z); this._grow(x + r, y + r, z);
+    this.ents.push('0\nCIRCLE\n8\n' + this._L(layer) + '\n10\n' + fmt(x, 3) + '\n20\n' + fmt(y, 3) + '\n30\n' + fmt(z, 3) + '\n40\n' + fmt(r, 3));
   };
 
   DxfWriter.prototype._grow = function (x, y, z) {
@@ -615,16 +655,24 @@
     out.push('9\n$EXTMAX\n10\n' + fmt(ext[3], 3) + '\n20\n' + fmt(ext[4], 3) + '\n30\n' + fmt(ext[5], 3));
     out.push('9\n$PDMODE\n70\n3');
     out.push('9\n$PDSIZE\n40\n' + fmt(this.pdsize, 3));
+    out.push('9\n$LTSCALE\n40\n' + fmt(this.ltscale || 1, 3));
     out.push('0\nENDSEC');
     out.push('0\nSECTION\n2\nTABLES');
-    out.push('0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0.0\n0\nENDTAB');
+    out.push('0\nTABLE\n2\nLTYPE\n70\n' + this.ltypes.size);
+    out.push('0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0.0');
+    for (const [name, def] of this.ltypes) {
+      if (!def) continue;
+      const pat = def[1], tot = pat.reduce((a, v) => a + Math.abs(v), 0);
+      out.push('0\nLTYPE\n2\n' + name + '\n70\n0\n3\n' + def[0] + '\n72\n65\n73\n' + pat.length + '\n40\n' + fmt(tot, 3) + pat.map((v) => '\n49\n' + fmt(v, 3)).join(''));
+    }
+    out.push('0\nENDTAB');
     out.push('0\nTABLE\n2\nLAYER\n70\n' + (this.layers.size + 1));
     out.push('0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS');
-    for (const [name, color] of this.layers) out.push('0\nLAYER\n2\n' + name + '\n70\n0\n62\n' + color + '\n6\nCONTINUOUS');
+    for (const [name, l] of this.layers) out.push('0\nLAYER\n2\n' + name + '\n70\n0\n62\n' + l.color + '\n6\n' + l.ltype);
     out.push('0\nENDTAB');
     out.push('0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\nSTANDARD\n70\n0\n40\n0.0\n41\n1.0\n50\n0.0\n71\n0\n42\n2.5\n3\ntxt\n4\n\n0\nENDTAB');
     out.push('0\nENDSEC');
-    out.push('0\nSECTION\n2\nBLOCKS\n0\nENDSEC');
+    out.push('0\nSECTION\n2\nBLOCKS' + (this.blocks.length ? '\n' + this.blocks.join('\n') : '') + '\n0\nENDSEC');
     out.push('0\nSECTION\n2\nENTITIES');
     const parts = [out.join('\n') + '\n'];
     for (let i = 0; i < this.ents.length; i += CHUNK) parts.push(this.ents.slice(i, i + CHUNK).join('\n') + '\n');
@@ -793,6 +841,8 @@
       }
     }
 
+    if (opts.extra) opts.extra(dxf, th);
+
     if (data.points && opts.writePoints !== false) {
       const mk = pointMarks(data.step || 1, th);
       dxf.pdsize = mk.cross;
@@ -846,6 +896,6 @@
     makeGrid, gridStats, fillGaps, sample, smoothGrid, downsample, maskGrid,
     samplePoints, gridTIN, contours,
     toPointsTxt, toASC, toLandXML, PRJ_L93, DxfWriter, buildDXF, pointMarks, encodeCP1252, LAYERS,
-    toGeoJSON, contoursToFeatures, pointsToFeatures, worldFile,
+    toGeoJSON, contoursToFeatures, pointsToFeatures, worldFile, fmt, eachPart, stripClosing,
   };
 });

@@ -86,6 +86,7 @@
     this.paths = {};
     this.build();
     this.relief = ds.grid ? reliefCanvas(ds.grid, ds.stats.zmin, ds.stats.zmax) : null;
+    this.buildPlan();
     this.fit();
     this.bind();
   }
@@ -142,6 +143,36 @@
     }
   };
 
+  /** Tracés du plan TN détaillé (reconstruits après chaque suppression). */
+  Plan2D.prototype.buildPlan = function () {
+    const ds = this.ds, ox = this.ox, oy = this.oy;
+    const PP = this.pp = {};
+    if (!ds.plan) return;
+    const path = (k) => (PP[k] = PP[k] || new Path2D());
+    const line = (p, coords, closed) => {
+      if (!coords || coords.length < 2) return;
+      p.moveTo(coords[0][0] - ox, coords[0][1] - oy);
+      for (let i = 1; i < coords.length; i++) p.lineTo(coords[i][0] - ox, coords[i][1] - oy);
+      if (closed) p.closePath();
+    };
+    for (const it of ds.plan.items) {
+      if (it.deleted) continue;
+      switch (it.kind) {
+        case 'talus':
+          for (const l of it.lines) line(path(l.type === 'crete' ? 'talusCrete' : 'talusPied'), l.coords);
+          for (const b of it.barbules) line(path('talusBarb'), b);
+          break;
+        case 'fosse': line(path('fosses'), it.coords); break;
+        case 'crete': line(path('cretes'), it.coords); break;
+        case 'haie': for (const q of it.paths) line(path(it.source === 'ign' ? 'haiesIgn' : 'haies'), q); break;
+        case 'massif': for (const r of it.rings) line(path('massifs'), r, true); break;
+        case 'mur': line(path('murs'), it.coords); break;
+        case 'constr': line(path('constr'), it.coords); break;
+        case 'arbre': { const p = path('arbres'); p.moveTo(it.x - ox + it.d / 2, it.y - oy); p.arc(it.x - ox, it.y - oy, it.d / 2, 0, Math.PI * 2); break; }
+      }
+    }
+  };
+
   Plan2D.prototype.fit = function () {
     const bb = T.ringBBox(this.ds.ring, this.ds.opt.margin + 5);
     this.resize();
@@ -190,6 +221,11 @@
       const r = cv.getBoundingClientRect();
       const w = this.toWorld(e.clientX - r.left, e.clientY - r.top);
       this.showReadout(w);
+      if (!drag && this.ds.plan) {
+        const it = this.pick(w);
+        if (it !== this.hover) { this.hover = it; cv.style.cursor = it ? 'pointer' : ''; this.queue(); }
+        if (it) this.readout('Clic pour retirer : ' + describe(it));
+      }
       if (!drag) return;
       pointers.set(e.pointerId, [e.clientX, e.clientY]);
       if (pointers.size === 2 && drag.d) {
@@ -201,13 +237,42 @@
       }
       this.queue();
     });
-    const end = (e) => { pointers.delete(e.pointerId); if (!pointers.size) drag = null; };
+    const end = (e) => {
+      if (drag && pointers.size === 1 && e.type === 'pointerup' && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 5 && this.ds.plan) {
+        const r = cv.getBoundingClientRect();
+        const it = this.pick(this.toWorld(e.clientX - r.left, e.clientY - r.top));
+        if (it) { it.deleted = true; this.hover = null; cv.style.cursor = ''; this.buildPlan(); this.draw(); if (this.onDelete) this.onDelete(it); }
+      }
+      pointers.delete(e.pointerId); if (!pointers.size) drag = null;
+    };
     cv.addEventListener('pointerup', end);
     cv.addEventListener('pointercancel', end);
-    cv.addEventListener('dblclick', () => this.fit());
+    cv.addEventListener('dblclick', () => { if (!this.ds.plan) this.fit(); });
     this.ro = new ResizeObserver(() => { this.resize(); this.draw(); });
     this.ro.observe(this.host);
   };
+
+  /** Élément du plan détaillé sous le pointeur (coordonnées locales). */
+  Plan2D.prototype.pick = function (w) {
+    const lay = this.layers;
+    return TopoPlan.hitTest(this.ds.plan, w[0] + this.ox, w[1] + this.oy, 8 / this.s, (k) => lay[k] && lay[k].on && lay[k].available);
+  };
+
+  function describe(it) {
+    switch (it.kind) {
+      case 'arbre': return 'arbre, h ' + it.h.toFixed(1) + ' m, houppier Ø ' + it.d.toFixed(1) + ' m';
+      case 'talus': return 'talus' + (it.h > 0 ? ' de ' + it.h.toFixed(2) + ' m' : '');
+      case 'fosse': return 'fossé ou noue de ' + it.len.toFixed(0) + ' m';
+      case 'crete': return 'ligne de crête';
+      case 'extreme': return (it.type === 'haut' ? 'point haut ' : 'point bas ') + it.z.toFixed(2);
+      case 'haie': return 'haie' + (it.source === 'ign' ? ' (IGN)' : '');
+      case 'massif': return 'massif boisé';
+      case 'mur': return 'mur ou clôture, h ' + it.h.toFixed(1) + ' m';
+      case 'constr': return it.nature;
+      case 'batiment': return 'cotes du bâtiment';
+    }
+    return it.kind;
+  }
 
   Plan2D.prototype.showReadout = function (w) {
     const X = w[0] + this.ox, Y = w[1] + this.oy;
@@ -260,6 +325,21 @@
     if (on('parcelles')) fillStroke(P.parcelles, null, C('parcelles'), 1.2);
     if (on('projet')) fillStroke(P.projet, null, C('projet'), 3);
 
+    // Plan TN détaillé
+    const PP = this.pp || {};
+    if (this.ds.plan) {
+      const st = (k, color, px, dash) => { if (!PP[k]) return; ctx.setLineDash(dash ? dash.map(lw) : []); ctx.strokeStyle = color; ctx.lineWidth = lw(px); ctx.stroke(PP[k]); };
+      if (on('massifs')) { if (PP.massifs) { ctx.fillStyle = 'rgba(51,105,30,.16)'; ctx.fill(PP.massifs, 'evenodd'); } st('massifs', C('massifs'), 1.4, [6, 4]); }
+      if (on('arbres') && PP.arbres) { ctx.fillStyle = 'rgba(46,157,58,.28)'; ctx.fill(PP.arbres); st('arbres', C('arbres'), 1.4); }
+      if (on('haies')) { st('haies', C('haies'), 3); st('haiesIgn', C('haies'), 1.6, [5, 3]); }
+      if (on('talus')) { st('talusBarb', C('talus'), 0.8); st('talusPied', C('talus'), 1.4); st('talusCrete', C('talus'), 2); }
+      if (on('cretes')) st('cretes', C('cretes'), 1.4, [7, 4]);
+      if (on('fosses')) st('fosses', C('fosses'), 2.4);
+      if (on('murs')) st('murs', C('murs'), 2.6);
+      if (on('constructions')) st('constr', C('constructions'), 2, [3, 2]);
+      ctx.setLineDash([]);
+    }
+
     // Points
     const pts = this.ds.view.semis ? this.ds.view.semis.points : [];
     const stepPx = this.ds.view.step * s;
@@ -300,6 +380,46 @@
         ctx.fillText(p.z.toFixed(2), q[0] + 4, q[1] - 6);
       }
     }
+    // Plan détaillé : symboles et textes à l'écran
+    if (this.ds.plan) {
+      const items = this.ds.plan.items;
+      ctx.font = '500 11px "JetBrains Mono", monospace';
+      for (const it of items) {
+        if (it.deleted) continue;
+        if (it.kind === 'fosse' && it.flow && on('fosses')) {
+          const q = TopoPlan.pointAt(it.coords, TopoPlan.polyLength(it.coords) / 2);
+          const p = scr(q.x - this.ox, q.y - this.oy), a = Math.atan2(-q.dy * it.flow, q.dx * it.flow);
+          ctx.strokeStyle = C('fosses'); ctx.lineWidth = 2; ctx.beginPath();
+          ctx.moveTo(p[0] - 9 * Math.cos(a - 0.45), p[1] - 9 * Math.sin(a - 0.45)); ctx.lineTo(p[0], p[1]); ctx.lineTo(p[0] - 9 * Math.cos(a + 0.45), p[1] - 9 * Math.sin(a + 0.45));
+          ctx.stroke();
+        } else if (it.kind === 'extreme' && on('extremes')) {
+          const p = scr(it.x - this.ox, it.y - this.oy), up = it.type === 'haut' ? -1 : 1;
+          ctx.fillStyle = C('extremes'); ctx.beginPath();
+          ctx.moveTo(p[0], p[1] + up * 6); ctx.lineTo(p[0] - 5, p[1] - up * 4); ctx.lineTo(p[0] + 5, p[1] - up * 4); ctx.closePath(); ctx.fill();
+          if (s > 1.5) { ctx.textAlign = 'left'; ctx.fillText((it.type === 'haut' ? 'PH ' : 'PB ') + it.z.toFixed(2), p[0] + 8, p[1]); }
+        } else if (it.kind === 'arbre' && on('arbres') && s > 6) {
+          const p = scr(it.x - this.ox, it.y - this.oy);
+          ctx.fillStyle = cssVar('--pv-ink', '#1c2229'); ctx.textAlign = 'center';
+          ctx.fillText('h' + Math.round(it.h) + ' Ø' + Math.round(it.d), p[0], p[1]);
+        } else if (it.kind === 'batiment' && on('batCotes') && s > 3) {
+          const p = scr(it.x - this.ox, it.y - this.oy);
+          ctx.fillStyle = C('batCotes'); ctx.textAlign = 'center';
+          it.lines.forEach((t, k) => ctx.fillText(t, p[0], p[1] + (k - (it.lines.length - 1) / 2) * 13));
+        }
+      }
+      if (this.hover) {
+        const it = this.hover;
+        ctx.strokeStyle = '#e5262f'; ctx.lineWidth = 3; ctx.setLineDash([]);
+        const hl = (coords, closed) => { ctx.beginPath(); coords.forEach((c, i) => { const p = scr(c[0] - this.ox, c[1] - this.oy); if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); }); if (closed) ctx.closePath(); ctx.stroke(); };
+        if (it.kind === 'arbre' || it.kind === 'extreme' || it.kind === 'batiment') {
+          const p = scr(it.x - this.ox, it.y - this.oy); ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(8, (it.d || 0) / 2 * s), 0, Math.PI * 2); ctx.stroke();
+        } else if (it.kind === 'talus') it.lines.forEach((l) => hl(l.coords));
+        else if (it.kind === 'haie') it.paths.forEach((q) => hl(q));
+        else if (it.kind === 'massif') it.rings.forEach((q) => hl(q, true));
+        else hl(it.coords);
+      }
+    }
+
     // Barre d'échelle
     const target = 120 / s;
     const pow = Math.pow(10, Math.floor(Math.log10(target)));
@@ -530,10 +650,67 @@
       }
       add('bati', grp);
     }
+    this.buildPlan();
     // Emprise
     const ring = ds.ring.concat([ds.ring[0]]);
     const emp = this.drapedLines([{ geometry: { type: 'LineString', coordinates: ring } }], cssVar('--zone', '#00B4FF'), lift * 2);
     this.root.add(emp);
+  };
+
+  /** Objets 3D du plan détaillé (reconstruits après une suppression). */
+  Terrain3D.prototype.buildPlan = function () {
+    const ds = this.ds, L = this.layers;
+    for (const k of this.planKeys || []) { const g0 = this.groups[k]; if (g0) { this.root.remove(g0); g0.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); delete this.groups[k]; } }
+    this.planKeys = [];
+    if (!ds.plan) return;
+    const lift = Math.max(0.15, ds.grid.res * 0.4);
+    const arrs = {};
+    const seg3 = (k, coords) => {
+      const a = (arrs[k] = arrs[k] || []);
+      for (let i = 0; i + 1 < coords.length; i++) {
+        const p = coords[i], q = coords[i + 1];
+        const zp = isFinite(p[2]) ? p[2] - this.oz : this.z(p[0], p[1]), zq = isFinite(q[2]) ? q[2] - this.oz : this.z(q[0], q[1]);
+        if (!isFinite(zp) || !isFinite(zq)) continue;
+        a.push(p[0] - this.ox, zp + lift, -(p[1] - this.oy), q[0] - this.ox, zq + lift, -(q[1] - this.oy));
+      }
+    };
+    const trees = [];
+    for (const it of ds.plan.items) {
+      if (it.deleted) continue;
+      switch (it.kind) {
+        case 'talus': it.lines.forEach((l) => seg3('talus', l.coords)); it.barbules.forEach((b) => seg3('talus', b)); break;
+        case 'fosse': seg3('fosses', it.coords); break;
+        case 'crete': seg3('cretes', it.coords); break;
+        case 'mur': seg3('murs', it.coords); break;
+        case 'constr': seg3('constructions', it.coords); break;
+        case 'haie': it.paths.forEach((q) => seg3('haies', q)); break;
+        case 'massif': it.rings.forEach((r) => seg3('massifs', r.concat([r[0]]))); break;
+        case 'arbre': trees.push(it); break;
+      }
+    }
+    for (const k in arrs) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arrs[k]), 3));
+      const grp = new THREE.Group();
+      grp.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: new THREE.Color(L[k] ? L[k].color : '#888') })));
+      this.groups[k] = grp; this.root.add(grp); this.planKeys.push(k);
+    }
+    if (trees.length && THREE.InstancedMesh) {
+      const grp = new THREE.Group();
+      const crown = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshLambertMaterial({ color: 0x3f8f3a }), trees.length);
+      const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 6), new THREE.MeshLambertMaterial({ color: 0x6d4c33 }), trees.length);
+      const dm = new THREE.Object3D();
+      trees.forEach((t, i) => {
+        const R = Math.max(0.6, t.d / 2), ch = Math.min(t.h * 0.75, Math.max(2, 1.6 * R)), base = t.z - this.oz;
+        dm.position.set(t.x - this.ox, base + t.h - ch / 2, -(t.y - this.oy)); dm.scale.set(R, ch / 2, R); dm.rotation.set(0, 0, 0); dm.updateMatrix();
+        crown.setMatrixAt(i, dm.matrix);
+        const th = Math.max(0.5, t.h - ch);
+        dm.position.set(t.x - this.ox, base + th / 2, -(t.y - this.oy)); dm.scale.set(0.18, th, 0.18); dm.updateMatrix();
+        trunk.setMatrixAt(i, dm.matrix);
+      });
+      grp.add(crown, trunk);
+      this.groups.arbres = grp; this.root.add(grp); this.planKeys.push('arbres');
+    }
   };
 
   Terrain3D.prototype.apply = function () {
@@ -599,7 +776,7 @@
       b.textContent = 'Aperçu allégé pour rester fluide. L\'export final sera calculé à la précision demandée et peut prendre plus de temps.';
       list.append(b);
     }
-    const groups = {};
+    const groups = {}, counters = {}, removed = [];
     let lastGroup = null;
     for (const key in layers) {
       const l = layers[key];
@@ -622,6 +799,7 @@
       const sw = document.createElement('i'); sw.style.background = l.color || 'transparent';
       const name = document.createElement('span'); name.textContent = l.label;
       const cnt = document.createElement('em'); cnt.textContent = l.count === undefined || l.count === null ? '' : typeof l.count === 'number' ? l.count.toLocaleString('fr-FR') : String(l.count);
+      counters[key] = cnt;
       lab.append(cb, sw, name, cnt);
       if (l.note) { const sm = document.createElement('small'); sm.textContent = l.note; lab.append(sm); }
       list.append(lab);
@@ -658,13 +836,26 @@
       $('pvCount').textContent = n + ' calque' + (n > 1 ? 's' : '') + ' à exporter';
     }
 
+    function planChanged() {
+      for (const k in counters) if (layers[k].plan && counters[k].textContent !== '') counters[k].textContent = TopoPlan.count(ds.plan, k).toLocaleString('fr-FR');
+      $('pvUndo').hidden = !removed.length;
+      $('pvUndo').textContent = 'Rétablir (' + removed.length + ')';
+      if (terrain && !terrain.failed) { terrain.buildPlan(); terrain.apply(); }
+      if (plan) { plan.buildPlan(); plan.draw(); }
+    }
+    $('pvUndo').hidden = true;
+    $('pvUndo').onclick = () => { const it = removed.pop(); if (it) { it.deleted = false; planChanged(); } };
+
     function show(m) {
       mode = m;
       $('pvTab2d').setAttribute('aria-selected', m === '2d');
       $('pvTab3d').setAttribute('aria-selected', m === '3d');
       view2d.hidden = m !== '2d'; view3d.hidden = m !== '3d';
       $('pv3dTools').hidden = m !== '3d';
-      if (m === '2d') { readout(''); if (!plan) plan = new Plan2D(view2d, ds, layers, readout); else { plan.resize(); plan.draw(); } }
+      if (m === '2d') {
+        readout(ds.plan ? 'Survolez un élément détecté : un clic le retire de l\'export' : '');
+        if (!plan) { plan = new Plan2D(view2d, ds, layers, readout); plan.onDelete = (it) => { removed.push(it); planChanged(); }; } else { plan.resize(); plan.draw(); }
+      }
       if (m === '3d') {
         if (!terrain) {
           terrain = new Terrain3D(view3d, ds, layers);

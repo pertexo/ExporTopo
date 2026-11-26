@@ -28,6 +28,9 @@
     fer: 'BDTOPO_V3:troncon_de_voie_ferree',
     vege: 'BDTOPO_V3:zone_de_vegetation',
     lidarMeta: 'IGNF_LIDAR-HD_METADONNEE:metadata',
+    mnsLidar: 'IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93',
+    constr: 'BDTOPO_V3:construction_lineaire',
+    haie: 'BDTOPO_V3:haie',
     orthoMeta: 'ORTHOIMAGERY.ORTHOPHOTOS.GRAPHE-MOSAIQUAGE:graphe_bdortho',
   };
   const MAX_TILE = 2000;           // pixels par requête WMS
@@ -725,6 +728,23 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* Type d'export : TN simple ou plan TN détaillé                       */
+  /* ------------------------------------------------------------------ */
+  function syncMode() {
+    const plan = $('modePlan').checked;
+    $('fsPlan').hidden = !plan;
+    $('planSettings').hidden = !plan;
+    $('exportBtn').textContent = plan ? 'Prévisualiser le plan TN' : 'Prévisualiser la zone';
+  }
+  ['modeTn', 'modePlan'].forEach((id) => $(id).addEventListener('change', () => {
+    state.ds = null;
+    syncMode();
+    try { localStorage.setItem('exportopo.mode', $('modePlan').checked ? 'plan' : 'tn'); } catch (e) { /* stockage indisponible */ }
+  }));
+  try { if (localStorage.getItem('exportopo.mode') === 'plan') $('modePlan').checked = true; } catch (e) { /* stockage indisponible */ }
+  syncMode();
+
+  /* ------------------------------------------------------------------ */
   /* 1. Préparation : récupération et calculs de l'aperçu                */
   /* ------------------------------------------------------------------ */
   const PREVIEW_PTS = 60000;     // au-delà, l'aperçu affiche un semis allégé
@@ -742,6 +762,13 @@
       smooth: parseInt($('smooth').value, 10), margin: parseFloat($('margin').value), scale: parseInt($('scale').value, 10),
       start: parseInt($('startId').value, 10) || 0,
       altText: $('cAltText').checked, matText: $('cMatText').checked,
+      plan: $('modePlan').checked ? {
+        talus: $('pTalus').checked, fosses: $('pFosses').checked, cretes: $('pCretes').checked, extremes: $('pExtremes').checked,
+        arbres: $('pArbres').checked, haies: $('pHaies').checked, massifs: $('pMassifs').checked, murs: $('pMurs').checked,
+        constructions: $('pConstr').checked, batCotes: $('pBatCotes').checked,
+        cartouche: $('pCartouche').checked, legende: $('pLegende').checked, nord: $('pNord').checked, quadrillage: $('pQuadrillage').checked,
+        sensi: $('pSensi').value, hmin: parseFloat($('pHmin').value),
+      } : null,
     };
   }
 
@@ -871,6 +898,18 @@
     want(opt.hydro, 'hydroS', SRC.hydroS, 'Surfaces en eau');
     want(opt.fer, 'fer', SRC.fer, 'Voies ferrées');
     want(opt.vege, 'vege', SRC.vege, 'Végétation');
+    const P = opt.plan;
+    const aux = {};
+    const wantAux = (flag, key, layer) => {
+      if (!flag) return;
+      vtasks.push(async () => { try { aux[key] = await wfs(layer, vecBB); } catch (e) { aux[key] = null; log('Plan détaillé : ' + key + ' non récupéré (' + e.message + ')', 'warn'); } vdone++; });
+    };
+    if (P) {
+      wantAux(!opt.bati, 'bati', SRC.bati);
+      wantAux(!opt.cadBati, 'cadBati', SRC.cadBati);
+      wantAux(P.constructions, 'constructions', SRC.constr);
+      wantAux(P.haies, 'haies', SRC.haie);
+    }
     const meta = {};
     vtasks.push(async () => { try { meta.lidar = await wfs(SRC.lidarMeta, bb, 500); } catch (e) { meta.lidar = null; } vdone++; });
     if (opt.ortho) vtasks.push(async () => { try { meta.ortho = await wfs(SRC.orthoMeta, bb, 500); } catch (e) { meta.ortho = null; } vdone++; });
@@ -896,7 +935,36 @@
       }
     }
 
-    const ds = { ring, zoneBB, bb, res, step, opt, stats, grid, vectors, ortho, dates, commune: state.commune, full: null };
+    const ds = { ring, zoneBB, bb, res, step, opt, stats, grid, vectors, ortho, dates, commune: state.commune, full: null, plan: null };
+
+    // Plan TN détaillé : sursol LiDAR (MNS) et détection automatique
+    if (P) {
+      let mns = null;
+      if (P.arbres || P.haies || P.massifs || P.murs || P.batCotes) {
+        progress(0.64, 'Sursol LiDAR HD (MNS)');
+        const lm = log('MNS LiDAR HD (hauteur des arbres et du bâti)…', 'run');
+        try {
+          mns = await fetchGrid(SRC.mnsLidar, bb, res, (d, n) => progress(0.64 + 0.06 * d / n, 'MNS LiDAR HD : tuile ' + d + '/' + n));
+          const sm = T.gridStats(mns);
+          lm.className = sm.coverage > 0.9 ? 'ok' : 'warn';
+          lm.firstChild.textContent = 'MNS LiDAR HD reçu : couverture ' + fr(sm.coverage * 100, 1) + ' %.';
+          if (sm.valid === 0) mns = null;
+        } catch (e) {
+          lm.className = 'warn';
+          lm.firstChild.textContent = 'MNS LiDAR HD indisponible (' + e.message + ') : arbres, haies, massifs et murs ne seront pas détectés.';
+        }
+      }
+      const t0 = Date.now();
+      ds.plan = await TopoPlan.analyse({
+        mnt: grid, mns, ring, margin: opt.margin,
+        buildings: vectors.bati || aux.bati || [], cadBati: vectors.cadBati || aux.cadBati || [],
+        constructions: aux.constructions || null, haiesIgn: aux.haies || null,
+        opts: Object.assign({ scale: opt.scale }, P),
+      }, (f, label) => progress(0.7 + 0.05 * f, 'Plan détaillé : ' + label));
+      const c = (k) => TopoPlan.count(ds.plan, k);
+      log('Plan détaillé (' + fr((Date.now() - t0) / 1000, 1) + ' s) : ' + c('talus') + ' talus, ' + c('fosses') + ' fossés/noues, ' + c('arbres') + ' arbres, ' +
+        c('haies') + ' haies, ' + c('massifs') + ' massifs, ' + c('murs') + ' murs/clôtures, ' + c('batCotes') + ' bâtiments cotés.', 'ok');
+    }
 
     // Aperçu : allégé si la précision demandée est lourde, pour ne pas bloquer le navigateur.
     progress(0.75, 'Calcul de l\'aperçu');
@@ -1014,6 +1082,32 @@
       hydro: { group: 'BD TOPO', label: 'Hydrographie', color: '#1e88e5', count: n(v.hydro) + n(v.hydroS), available: has(v.hydro) || has(v.hydroS), on: true },
       fer: { group: 'BD TOPO', label: 'Voies ferrées', color: '#6d4c41', count: n(v.fer), available: has(v.fer), on: true },
       vege: { group: 'BD TOPO', label: 'Végétation', color: '#2e7d32', count: n(v.vege), available: has(v.vege), on: true },
+      ...planDefs(ds),
+    };
+  }
+
+  /** Calques du plan TN détaillé (aperçu et export). */
+  function planDefs(ds) {
+    const P = ds.opt.plan;
+    if (!P || !ds.plan) return {};
+    const G = 'Plan TN détaillé', c = (k) => TopoPlan.count(ds.plan, k);
+    const d = (key, label, color, note, flag) => ({ group: G, label, color, count: c(key), available: flag !== false && c(key) > 0, on: true, note, plan: true });
+    const lay = (label, flag) => ({ group: G, label, color: null, available: !!flag, on: true, plan: true });
+    return {
+      talus: d('talus', 'Talus (crête, pied, barbules)', '#e07a1f', null, P.talus),
+      fosses: d('fosses', 'Fossés et noues, fil d\'eau', '#1565c0', null, P.fosses),
+      cretes: d('cretes', 'Lignes de crête', '#a1887f', null, P.cretes),
+      extremes: d('extremes', 'Points hauts et bas', '#c2185b', null, P.extremes),
+      arbres: d('arbres', 'Arbres', '#2e9d3a', 'Clic sur un arbre dans le plan 2D pour le retirer', P.arbres),
+      haies: d('haies', 'Haies', '#558b2f', null, P.haies),
+      massifs: d('massifs', 'Massifs boisés', '#33691e', null, P.massifs),
+      murs: d('murs', 'Murs et clôtures (LiDAR, indicatif)', '#616161', null, P.murs),
+      constructions: d('constructions', 'Constructions linéaires IGN', '#8d6e63', null, P.constructions),
+      batCotes: d('batCotes', 'Cotes des bâtiments', '#37474f', null, P.batCotes),
+      cartouche: lay('Cartouche', P.cartouche),
+      legende: lay('Légende', P.legende),
+      nord: lay('Flèche du nord', P.nord),
+      quadrillage: lay('Quadrillage Lambert-93', P.quadrillage),
     };
   }
 
@@ -1052,7 +1146,15 @@
       faces: on('tin') ? full.faces : null,
       contours: on('contours') ? full.lines : null,
       vectors,
-    }, { textHeight: th, altText: on('altText'), matText: o.matText, faces3d: on('tin'), writePoints: on('points'), decimals: 2 });
+    }, { textHeight: th, altText: on('altText'), matText: o.matText, faces3d: on('tin'), writePoints: on('points'), decimals: 2,
+      extra: ds.plan ? (dxf, h) => TopoPlan.writeDXF(dxf, ds.plan, {
+        on, th: h, scale: o.scale,
+        layout: (on('cartouche') || on('legende') || on('nord') || on('quadrillage')) ? {
+          zoneBB: ds.zoneBB, commune: ds.commune, version: T.VERSION, date: frDate(date),
+          dates: ds.dates.lines.filter((l) => /LiDAR|BD TOPO|Cadastre/.test(l.label)).map((l) => l.label + ' : ' + l.value),
+          base: [on('points') ? ['Point TN coté', 'point'] : null, on('contours') ? ['Courbe de niveau', 'line'] : null, on('parcelles') ? ['Limite parcellaire', 'line'] : null].filter(Boolean),
+        } : null,
+      }) : null });
     files[base + '.dxf'] = new Blob(dxfParts.map(T.encodeCP1252), { type: 'application/dxf' });
 
     if (on('points')) {
@@ -1085,6 +1187,11 @@
     if (on('points')) gj.points_TN = T.pointsToFeatures(pts);
     if (on('contours')) gj.courbes_niveau = T.contoursToFeatures(full.lines);
     for (const k in vectors) if (vectors[k]) gj[k] = vectors[k];
+    if (ds.plan) {
+      const pf = TopoPlan.toFeatures(ds.plan, on);
+      for (const k in pf) gj[k] = pf[k];
+      if (on('arbres') && TopoPlan.count(ds.plan, 'arbres')) files['arbres.csv'] = TopoPlan.treesTxt(ds.plan);
+    }
     for (const k in gj) files['geojson/' + k + '.geojson'] = textBlob(T.toGeoJSON(gj[k], k));
 
     files['LISEZMOI.txt'] = readme(ds, base, date, lay, full);
@@ -1141,6 +1248,19 @@
       'MILLÉSIMES DES DONNÉES IGN',
     ];
     ds.dates.lines.forEach((l) => out.push('  ' + l.label + ' : ' + l.value));
+    if (ds.plan) {
+      const c = (k) => (on(k) ? TopoPlan.count(ds.plan, k) : 0);
+      out.push('', 'PLAN TN DÉTAILLÉ (détection automatique sur MNT et MNS LiDAR HD — à contrôler)',
+        '  Sensibilité : ' + o.plan.sensi + ', hauteur minimale des arbres : ' + o.plan.hmin + ' m.',
+        '  Talus : ' + c('talus') + ' (calques TN_TALUS_CRETE, TN_TALUS_PIED, TN_TALUS_BARBULES, TN_TALUS_TEXTE)',
+        '  Fossés et noues : ' + c('fosses') + ' (TN_FOSSES_NOUES en 3D au fil d\'eau, TN_FOSSES_FIL_EAU, TN_FOSSES_SENS)',
+        '  Lignes de crête : ' + c('cretes') + ' (TN_LIGNES_CRETE) ; points hauts et bas : ' + c('extremes') + ' (TN_POINTS_HAUTS_BAS)',
+        '  Arbres : ' + c('arbres') + ' (VEG_ARBRES = bloc EXT_HOUPPIER à l\'échelle du houppier, VEG_ARBRES_TRONC, VEG_ARBRES_TEXTE « h hauteur Ø diamètre » ; liste dans arbres.csv : n° X Y Zsol hauteur diamètre)',
+        '  Haies : ' + c('haies') + ', massifs boisés : ' + c('massifs') + ', murs et clôtures (indicatif) : ' + c('murs') + ', constructions linéaires IGN : ' + c('constructions'),
+        '  Bâtiments cotés : ' + c('batCotes') + ' (BAT_COTES : hauteur, altitude au faîtage, TN au pied)',
+        '  Limites : détection automatique. Les talus et fossés sous couvert boisé, les clôtures légères, bordures,',
+        '  regards et réseaux ne sont pas fiables ou pas visibles. Contrôler le plan avant toute utilisation.');
+    }
     out.push('', 'TERRAIN',
       '  MNT source : LiDAR HD IGN au pas de ' + ds.res + ' m (couverture ' + f(st.lidar * 100, 1) + ' %' + (st.rge ? ', complété par RGE ALTI sur ' + f(st.rge * 100, 1) + ' %' : '') + ')',
       '  Altitudes : ' + f(st.zmin) + ' m à ' + f(st.zmax) + ' m');

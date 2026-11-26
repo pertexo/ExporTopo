@@ -153,6 +153,20 @@ footer.notes a { color: inherit; }
 .vertex-label { font: 500 11px/1 var(--mono); color: var(--ink); background: var(--sheet); border: 1px solid var(--stake); padding: 2px 4px; border-radius: 3px; white-space: nowrap; }
 .zone-card, .zone-empty { margin: 0; }
 
+/* Type d'export */
+.mode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mode-card { position: relative; display: grid; gap: 4px; align-content: start; padding: 10px 11px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); cursor: pointer; min-width: 0; }
+.mode-card input { position: absolute; opacity: 0; pointer-events: none; }
+.mode-card b { font: 600 15px/1.15 var(--display); letter-spacing: .02em; text-transform: uppercase; }
+.mode-card b em { font: 600 10px/1 var(--mono); font-style: normal; text-transform: none; letter-spacing: 0; color: var(--stake-ink); background: var(--stake); padding: 2px 4px; border-radius: 3px; vertical-align: 2px; margin-left: 2px; }
+.mode-card span { font-size: 12.5px; color: var(--muted); line-height: 1.35; }
+.mode-card:has(input:checked) { border-color: var(--stake); box-shadow: inset 0 0 0 1px var(--stake); }
+.mode-card:has(input:focus-visible) { outline: 2px solid var(--stake); outline-offset: 2px; }
+.sub { margin: 8px 0 0; font: 600 11.5px/1 var(--display); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.plan-fs { border-left: 2px solid var(--stake); padding-left: 10px; }
+.plan-settings { margin-top: 12px; }
+@media (max-width: 400px) { .mode { grid-template-columns: 1fr; } }
+
 /* Case « tout » des chapitres */
 legend .all { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 legend .all input { margin: 0; width: 16px; height: 16px; accent-color: var(--stake); }
@@ -258,7 +272,7 @@ body.pv-open { overflow: hidden; }
           <h1><img src="assets/logo.png" alt="" width="64" height="64" class="logo"><span class="name">Expor<span>Topo</span></span><small class="by">By CHB</small></h1>
           <p>Export des données publiques IGN en Lambert-93 / NGF-IGN69</p>
         </div>
-        <small id="appVersion">v1.3 · MIT</small>
+        <small id="appVersion">v1.4 · MIT</small>
       </header>
 
       <section class="step" aria-labelledby="s1">
@@ -300,6 +314,10 @@ body.pv-open { overflow: hidden; }
 
       <section class="step" aria-labelledby="s2">
         <h2 id="s2"><b>2</b> Contenu de l'export</h2>
+        <div class="mode" role="radiogroup" aria-label="Type d'export">
+          <label class="mode-card"><input type="radio" name="mode" id="modeTn" value="tn" checked><b>Export TN</b><span>Points, courbes, MNT, cadastre et contexte.</span></label>
+          <label class="mode-card"><input type="radio" name="mode" id="modePlan" value="plan"><b>Plan TN détaillé <em>nouveau</em></b><span>En plus : talus, fossés, arbres, haies, murs, cotes, cartouche.</span></label>
+        </div>
         <fieldset class="group">
           <legend><label class="all"><input type="checkbox" class="allbox"><span>Terrain naturel · MNT LiDAR HD</span></label></legend>
           <label class="check"><input type="checkbox" id="cPoints" checked><span>Semis de points TN</span><code>TN_POINTS</code></label>
@@ -324,6 +342,27 @@ body.pv-open { overflow: hidden; }
         <fieldset class="group">
           <legend><label class="all"><input type="checkbox" class="allbox"><span>Image</span></label></legend>
           <label class="check"><input type="checkbox" id="cOrtho" checked><span>Orthophoto géoréférencée</span><code>.jpg + .jgw</code><small>À insérer en image de fond, elle se cale seule en Lambert-93.</small></label>
+        </fieldset>
+        <fieldset class="group plan-fs" id="fsPlan" hidden>
+          <legend><label class="all"><input type="checkbox" class="allbox"><span>Plan TN détaillé · relevé LiDAR HD</span></label></legend>
+          <p class="sub">Relief</p>
+          <label class="check"><input type="checkbox" id="pTalus" checked><span>Talus : crête, pied, barbules, hauteur</span><code>TN_TALUS</code></label>
+          <label class="check"><input type="checkbox" id="pFosses" checked><span>Fossés et noues : fil d'eau, sens d'écoulement</span><code>TN_FOSSES</code></label>
+          <label class="check"><input type="checkbox" id="pCretes" checked><span>Lignes de crête</span><code>TN_LIGNES_CRETE</code></label>
+          <label class="check"><input type="checkbox" id="pExtremes" checked><span>Points hauts et bas cotés</span><code>TN_POINTS_HAUTS_BAS</code></label>
+          <p class="sub">Végétation</p>
+          <label class="check"><input type="checkbox" id="pArbres" checked><span>Arbres : position, hauteur, houppier</span><code>VEG_ARBRES</code><small>Symbole de houppier à l'échelle, liste dans arbres.csv.</small></label>
+          <label class="check"><input type="checkbox" id="pHaies" checked><span>Haies (LiDAR et IGN)</span><code>VEG_HAIES</code></label>
+          <label class="check"><input type="checkbox" id="pMassifs" checked><span>Massifs boisés</span><code>VEG_MASSIFS</code></label>
+          <p class="sub">Ouvrages et bâti</p>
+          <label class="check"><input type="checkbox" id="pMurs" checked><span>Murs et clôtures détectés</span><code>OUV_MURS</code><small>Indicatif : structures fines de 0,6 à 3 m de haut.</small></label>
+          <label class="check"><input type="checkbox" id="pConstr" checked><span>Murs, clôtures et ouvrages IGN</span><code>OUV_CONSTRUCTIONS</code></label>
+          <label class="check"><input type="checkbox" id="pBatCotes" checked><span>Cotes des bâtiments : hauteur, faîtage, TN au pied</span><code>BAT_COTES</code></label>
+          <p class="sub">Mise en page</p>
+          <label class="check"><input type="checkbox" id="pCartouche" checked><span>Cartouche « non levé sur site »</span><code>CARTOUCHE</code></label>
+          <label class="check"><input type="checkbox" id="pLegende" checked><span>Légende</span><code>LEGENDE</code></label>
+          <label class="check"><input type="checkbox" id="pNord" checked><span>Flèche du nord</span><code>NORD</code></label>
+          <label class="check"><input type="checkbox" id="pQuadrillage" checked><span>Quadrillage Lambert-93</span><code>QUADRILLAGE</code></label>
         </fieldset>
       </section>
 
@@ -353,6 +392,16 @@ body.pv-open { overflow: hidden; }
           </label>
           <label class="check full"><input type="checkbox" id="cAltText" checked><span>Altitudes écrites à côté des points (DXF)</span><span></span></label>
           <label class="check full"><input type="checkbox" id="cMatText"><span>Matricules écrits à côté des points (DXF)</span><span></span></label>
+        </div>
+        <div class="settings plan-settings" id="planSettings" hidden>
+          <p class="sub full">Plan TN détaillé</p>
+          <label>Sensibilité des talus et fossés
+            <select id="pSensi"><option value="faible">faible (talus marqués)</option><option value="moyenne" selected>moyenne</option><option value="forte">forte (détecte plus)</option></select>
+          </label>
+          <label>Hauteur minimale d'un arbre
+            <select id="pHmin"><option value="2">2 m</option><option value="3" selected>3 m</option><option value="4">4 m</option><option value="5">5 m</option><option value="6">6 m</option></select>
+          </label>
+          <p class="hint full">Les symboles et textes du plan suivent l'échelle choisie ci-dessus.</p>
         </div>
       </section>
 
@@ -398,6 +447,7 @@ body.pv-open { overflow: hidden; }
       <input type="range" id="pvExag" min="1" max="5" step="0.5" value="1">
       <output id="pvExagVal">× 1</output>
     </div>
+    <button type="button" id="pvUndo" hidden>Rétablir</button>
     <button type="button" id="pvFit">Recadrer</button>
     <button type="button" id="pvClose" class="pv-close" aria-label="Fermer la prévisualisation">Fermer</button>
   </div>
@@ -426,6 +476,7 @@ body.pv-open { overflow: hidden; }
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="js/core.js"></script>
+<script src="js/plan.js"></script>
 <script src="js/preview.js"></script>
 <script src="js/app.js"></script>
 </body>

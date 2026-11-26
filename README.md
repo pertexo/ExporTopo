@@ -19,6 +19,25 @@ Aucun compte, aucun serveur : tout est calculé dans le navigateur à partir des
 
 Coordonnées : **RGF93 / Lambert-93 (EPSG:2154)**, altitudes **NGF-IGN69**. France métropolitaine.
 
+## Plan TN détaillé (option)
+
+Choisir **Plan TN détaillé** au début de l'étape 2 ajoute au DXF un relevé automatique issu du MNT et du MNS LiDAR HD :
+
+| Élément | Calques DXF |
+|---|---|
+| Talus : crête, pied (polylignes 3D), barbules longues et courtes, hauteur | `TN_TALUS_CRETE`, `TN_TALUS_PIED`, `TN_TALUS_BARBULES`, `TN_TALUS_TEXTE` |
+| Fossés et noues : axe 3D au fil d'eau, cotes « FE », sens d'écoulement | `TN_FOSSES_NOUES`, `TN_FOSSES_FIL_EAU`, `TN_FOSSES_SENS` |
+| Lignes de crête, points hauts et bas cotés | `TN_LIGNES_CRETE`, `TN_POINTS_HAUTS_BAS` |
+| Arbres : bloc de houppier à l'échelle, tronc, « h hauteur Ø diamètre » ; liste `arbres.csv` | `VEG_ARBRES`, `VEG_ARBRES_TRONC`, `VEG_ARBRES_TEXTE` |
+| Haies (LiDAR et BD TOPO), massifs boisés | `VEG_HAIES_LIDAR`, `VEG_HAIES_IGN`, `VEG_MASSIFS_BOISES` |
+| Murs et clôtures détectés (indicatif), constructions linéaires BD TOPO | `OUV_MURS_CLOTURES_LIDAR`, `OUV_CONSTRUCTIONS_IGN` |
+| Cotes des bâtiments : hauteur, faîtage, TN au pied | `BAT_COTES` |
+| Cartouche « non levé sur site », légende, nord, quadrillage Lambert-93 | `CARTOUCHE`, `LEGENDE`, `NORD`, `QUADRILLAGE` |
+
+Réglages : sensibilité des talus et fossés (faible, moyenne, forte), hauteur minimale d'un arbre. Dans la prévisualisation 2D, un clic sur un élément détecté le retire de l'export (« Rétablir » pour annuler).
+
+Limites : détection automatique à contrôler. Les talus et fossés sous couvert boisé dense, les clôtures légères, bordures, regards et réseaux ne sont pas fiables ou pas visibles dans le LiDAR.
+
 ## Utilisation
 
 **Sur ton ordinateur :** décompresse le dossier et ouvre `ExporTopo.html` dans Chrome, Edge ou Firefox. Une connexion internet suffit.
@@ -45,6 +64,7 @@ Limites : 4 km² d'emprise, 400 000 points. Au-delà de ~2 km² le MNT passe aut
 |---|---|---|
 | MNT LiDAR HD 0,50 m (Float32) | WMS-R `https://data.geopf.fr/wms-r/wms` | `IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93` |
 | RGE ALTI 1 m (bouche-trous) | WMS-R | `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES` |
+| MNS LiDAR HD 0,50 m (sursol : arbres, bâti) | WMS-R | `IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93` |
 | Cadastre | WFS `https://data.geopf.fr/wfs/ows` | `CADASTRALPARCELS.PARCELLAIRE_EXPRESS:parcelle`, `:batiment`, `:borne_limite_propriete` |
 | BD TOPO | WFS | `BDTOPO_V3:batiment`, `troncon_de_route`, `troncon_hydrographique`, `surface_hydrographique`, `troncon_de_voie_ferree`, `zone_de_vegetation` |
 | Orthophoto | WMS-R | `HR.ORTHOIMAGERY.ORTHOPHOTOS` |
@@ -62,6 +82,7 @@ Le MNT LiDAR HD est précis à ~10 cm en terrain dégagé, moins sous végétati
 - `js/core.js` : calculs sans dépendance (semis de points, interpolation bilinéaire, courbes par marching squares, TIN, écrivains DXF R12 / CSV / LandXML / ASC / GeoJSON). Testable sous Node : `node -e "const T=require('./js/core.js')"`.
 - `js/app.js` : carte Leaflet, tracé et poignées d'édition, appels aux services IGN, assemblage du ZIP.
 - `js/preview.js` : fenêtre de prévisualisation (plan 2D sur canvas, terrain 3D avec three.js).
+- `js/plan.js` : plan TN détaillé (détection des talus, fossés, arbres, haies, murs, cotes ; calques DXF et mise en page). Testable sous Node.
 
 Bibliothèques chargées depuis un CDN : Leaflet, proj4js, JSZip, geotiff.js, three.js.
 

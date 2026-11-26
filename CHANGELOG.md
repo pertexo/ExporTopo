@@ -1,5 +1,13 @@
 # Journal des versions — ExporTopo
 
+## v1.4 — 26/11/2026
+- Nouveau type d'export **Plan TN détaillé**, au choix en tête de l'étape 2, avec son chapitre et ses réglages (sensibilité, hauteur minimale des arbres).
+- Détection automatique sur le MNT et le MNS LiDAR HD : talus (crête, pied, barbules, hauteur), fossés et noues (fil d'eau coté, sens d'écoulement), lignes de crête, points hauts et bas, arbres (position, hauteur, houppier), haies, massifs boisés, murs et clôtures, cotes des bâtiments (hauteur, faîtage, TN au pied).
+- Ajout des haies et constructions linéaires (murs, clôtures) de la BD TOPO.
+- Mise en page du DXF : cartouche « non levé sur site » avec sources et dates, légende, flèche du nord, quadrillage Lambert-93.
+- Prévisualisation : calques du plan détaillé en 2D et en 3D (arbres en volume), suppression d'un élément mal détecté par un clic, bouton « Rétablir ».
+- Export : liste des arbres `arbres.csv` (n° X Y Z hauteur diamètre) et GeoJSON de chaque élément détecté.
+
 ## v1.3 — 11/11/2026
 - Onglets en haut du panneau pour passer d'ExporTopo (terrain naturel) à ExporPaysage (insertion paysagère 3D) et inversement.
 
