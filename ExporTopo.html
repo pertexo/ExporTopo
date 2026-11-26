@@ -167,6 +167,34 @@ footer.notes a { color: inherit; }
 .plan-settings { margin-top: 12px; }
 @media (max-width: 400px) { .mode { grid-template-columns: 1fr; } }
 
+/* Historique des emprises, nom de l'affaire */
+.hist { display: grid; gap: 5px; }
+.hist > label, .affaire { font-size: 12.5px; color: var(--muted); }
+.hist-row { display: flex; gap: 6px; }
+.hist-row select { flex: 1; min-width: 0; }
+.hist-row button { font-size: 12.5px; padding: 8px 10px; }
+.hist-row button:disabled { opacity: .45; cursor: not-allowed; }
+.hist-io { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.hist-io button.link:disabled { opacity: .45; cursor: not-allowed; text-decoration: none; }
+.affaire { display: grid; gap: 4px; }
+.affaire small { font-size: 11.5px; }
+
+/* Nouvelle version disponible */
+.update-bar { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--stake); border-radius: 4px; background: var(--sheet); font-size: 13.5px; }
+.update-bar span { flex: 1; }
+.update-bar button { background: var(--stake); color: var(--stake-ink); border-color: var(--stake); font-size: 13px; padding: 8px 10px; }
+
+/* Bilan des surfaces dans la prévisualisation */
+.pv-bilan { margin-top: 12px; padding: 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); }
+.pv-bilan table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pv-bilan td { padding: 2px 0; vertical-align: baseline; }
+.pv-bilan td + td { text-align: right; font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; padding-left: 8px; white-space: nowrap; }
+.pv-bilan i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.pv-bilan tr.sum td { border-top: 1px solid var(--rule); padding-top: 4px; font-weight: 600; }
+.pv-bilan p { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
+.pv-conf { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.pv-conf b { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+
 /* Case « tout » des chapitres */
 legend .all { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 legend .all input { margin: 0; width: 16px; height: 16px; accent-color: var(--stake); }
@@ -272,11 +300,28 @@ body.pv-open { overflow: hidden; }
           <h1><img src="assets/logo.png" alt="" width="64" height="64" class="logo"><span class="name">Expor<span>Topo</span></span><small class="by">By CHB</small></h1>
           <p>Export des données publiques IGN en Lambert-93 / NGF-IGN69</p>
         </div>
-        <small id="appVersion">v1.4 · MIT</small>
+        <small id="appVersion">v1.5 · MIT</small>
       </header>
+
+      <div class="update-bar" id="updateBar" hidden role="status">
+        <span id="updateTxt">Nouvelle version disponible.</span>
+        <button type="button" id="updateBtn">Recharger</button>
+      </div>
 
       <section class="step" aria-labelledby="s1">
         <h2 id="s1"><b>1</b> Zone d'étude</h2>
+        <div class="hist" id="hist">
+          <label for="histSel">Emprises récentes</label>
+          <div class="hist-row">
+            <select id="histSel"><option value="">Aucune emprise enregistrée</option></select>
+            <button type="button" id="histDel" title="Retirer cette emprise de l'historique" aria-label="Retirer cette emprise de l'historique" disabled>Retirer</button>
+          </div>
+          <div class="hist-io">
+            <button type="button" class="link" id="empOpen">Ouvrir un fichier d'emprise…</button>
+            <button type="button" class="link" id="empSave" disabled>Enregistrer l'emprise (.geojson)</button>
+            <input type="file" id="empFile" accept=".geojson,.json,application/geo+json,application/json" hidden>
+          </div>
+        </div>
         <form class="search" id="searchForm" autocomplete="off">
           <input type="text" id="searchInput" placeholder="Adresse, lieu-dit, commune…" aria-label="Rechercher une adresse">
           <button type="submit">Aller</button>
@@ -288,6 +333,9 @@ body.pv-open { overflow: hidden; }
           <button type="button" id="toolParcel" aria-pressed="false" title="Cliquez sur une ou plusieurs parcelles">Parcelles</button>
         </div>
         <dl id="zoneInfo" class="zone-empty">Aucune zone. Recherchez une adresse, puis tracez un rectangle, un polygone ou sélectionnez des parcelles.</dl>
+        <label class="affaire" for="affaire">Nom de l'affaire <small>facultatif · repris dans le cartouche et le nom des fichiers</small>
+          <input type="text" id="affaire" maxlength="60" placeholder="ex. Lotissement Les Tilleuls" autocomplete="off">
+        </label>
         <div class="edit-help" id="editHelp" hidden>
           <p class="hint">Modifiez la zone sur la carte : glissez un <span class="g-sq"></span> sommet, glissez une <span class="g-mid"></span> poignée de milieu, clic droit sur un sommet pour le supprimer.</p>
           <div class="seg" role="group" aria-label="Action de la poignée du milieu">
@@ -316,7 +364,7 @@ body.pv-open { overflow: hidden; }
         <h2 id="s2"><b>2</b> Contenu de l'export</h2>
         <div class="mode" role="radiogroup" aria-label="Type d'export">
           <label class="mode-card"><input type="radio" name="mode" id="modeTn" value="tn" checked><b>Export TN</b><span>Points, courbes, MNT, cadastre et contexte.</span></label>
-          <label class="mode-card"><input type="radio" name="mode" id="modePlan" value="plan"><b>Plan TN détaillé <em>nouveau</em></b><span>En plus : talus, fossés, arbres, haies, murs, cotes, cartouche.</span></label>
+          <label class="mode-card"><input type="radio" name="mode" id="modePlan" value="plan"><b>Plan TN détaillé <em>v1.5</em></b><span>En plus : talus, fossés, arbres, murs, espaces verts, enrobés, parkings en m², cartouche.</span></label>
         </div>
         <fieldset class="group">
           <legend><label class="all"><input type="checkbox" class="allbox"><span>Terrain naturel · MNT LiDAR HD</span></label></legend>
@@ -358,6 +406,17 @@ body.pv-open { overflow: hidden; }
           <label class="check"><input type="checkbox" id="pMurs" checked><span>Murs et clôtures détectés</span><code>OUV_MURS</code><small>Indicatif : structures fines de 0,6 à 3 m de haut.</small></label>
           <label class="check"><input type="checkbox" id="pConstr" checked><span>Murs, clôtures et ouvrages IGN</span><code>OUV_CONSTRUCTIONS</code></label>
           <label class="check"><input type="checkbox" id="pBatCotes" checked><span>Cotes des bâtiments : hauteur, faîtage, TN au pied</span><code>BAT_COTES</code></label>
+          <p class="sub">Surfaces d'après l'orthophoto</p>
+          <label class="check"><input type="checkbox" id="sEV" checked><span>Espaces verts : pelouses, massifs, boisements</span><code>SURF_ESPACES_VERTS</code></label>
+          <label class="check"><input type="checkbox" id="sEnrobe" checked><span>Chaussées, enrobés, bétons, pavés</span><code>SURF_CHAUSSEE · SURF_ENROBE</code></label>
+          <label class="check"><input type="checkbox" id="sParking" checked><span>Parkings</span><code>SURF_PARKING</code><small>Contours BD TOPO et OpenStreetMap, recoupés avec l'orthophoto.</small></label>
+          <label class="check"><input type="checkbox" id="sPermeable" checked><span>Stabilisé, gravier, terre</span><code>SURF_PERMEABLE</code></label>
+          <label class="check"><input type="checkbox" id="sCultures" checked><span>Cultures et vignes</span><code>SURF_CULTURES</code></label>
+          <label class="check"><input type="checkbox" id="sEau" checked><span>Eau et piscines</span><code>SURF_EAU</code></label>
+          <label class="check"><input type="checkbox" id="sTxt" checked><span>Surfaces écrites en m² et bilan</span><code>SURF_TEXTE · surfaces.csv</code><small>Bilan par nature de sol, surface imperméabilisée et coefficient de ruissellement indicatif.</small></label>
+          <p class="sub">Contrôle de cohérence</p>
+          <label class="check"><input type="checkbox" id="cConf" checked><span>Indice de confiance vert / orange / rouge</span><code>CTRL_A_VERIFIER</code><small>Recoupe LiDAR, orthophoto infrarouge et CoSIA : les objets douteux sont entourés.</small></label>
+          <label class="check"><input type="checkbox" id="cChang" checked><span>Changements entre le LiDAR et l'orthophoto</span><code>CTRL_CHANGEMENTS</code><small>Bâtiment démoli ou construit, arbre abattu entre les deux dates.</small></label>
           <p class="sub">Mise en page</p>
           <label class="check"><input type="checkbox" id="pCartouche" checked><span>Cartouche « non levé sur site »</span><code>CARTOUCHE</code></label>
           <label class="check"><input type="checkbox" id="pLegende" checked><span>Légende</span><code>LEGENDE</code></label>
@@ -418,9 +477,9 @@ body.pv-open { overflow: hidden; }
       </section>
 
       <footer class="notes">
-        <p>Sources : IGN, Géoplateforme — MNT LiDAR HD (RGE ALTI en complément), Parcellaire Express (PCI), BD TOPO, BD ORTHO. Licence Ouverte Etalab 2.0 : citez « IGN » sur vos plans.</p>
+        <p>Sources : IGN, Géoplateforme — MNT LiDAR HD (RGE ALTI en complément), Parcellaire Express (PCI), BD TOPO, BD ORTHO, CoSIA. Licence Ouverte Etalab 2.0 : citez « IGN » sur vos plans. Parkings du plan détaillé : © contributeurs OpenStreetMap (ODbL).</p>
         <p>Le MNT LiDAR HD est précis à environ ±10 cm sur sol dégagé, moins sous végétation dense, sur talus raides et en bordure de bâti. Il convient aux études d'esquisse, d'APS et de faisabilité ; il ne remplace pas un levé de géomètre pour l'exécution.</p>
-        <p>Tout le calcul se fait dans votre navigateur. Aucun compte, aucun serveur intermédiaire.</p>
+        <p>Tout le calcul se fait dans votre navigateur. Aucun compte, aucun serveur intermédiaire. Les emprises récentes restent dans ce navigateur.</p>
       </footer>
     </div>
   </aside>
@@ -475,9 +534,11 @@ body.pv-open { overflow: hidden; }
 <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="js/core.js"></script>
-<script src="js/plan.js"></script>
-<script src="js/preview.js"></script>
-<script src="js/app.js"></script>
+<!-- ?v= : force le navigateur à recharger les scripts à chaque nouvelle version -->
+<script src="js/core.js?v=1.5"></script>
+<script src="js/plan.js?v=1.5"></script>
+<script src="js/surfaces.js?v=1.5"></script>
+<script src="js/preview.js?v=1.5"></script>
+<script src="js/app.js?v=1.5"></script>
 </body>
 </html>

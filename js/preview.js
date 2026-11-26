@@ -169,6 +169,8 @@
         case 'mur': line(path('murs'), it.coords); break;
         case 'constr': line(path('constr'), it.coords); break;
         case 'arbre': { const p = path('arbres'); p.moveTo(it.x - ox + it.d / 2, it.y - oy); p.arc(it.x - ox, it.y - oy, it.d / 2, 0, Math.PI * 2); break; }
+        case 'surface': { const p = path('s_' + it.cls); for (const r of it.rings) line(p, r, true); break; }
+        case 'changement': if (it.ring) line(path('chg'), it.ring, true); break;
       }
     }
   };
@@ -259,6 +261,12 @@
   };
 
   function describe(it) {
+    let s = describeKind(it);
+    if (it.conf && window.TopoSurf) s += ' · ' + TopoSurf.CONF_TXT[it.conf] + (it.confWhy && it.conf !== 'bonne' ? ' (' + it.confWhy + ')' : '');
+    return s;
+  }
+  function describeKind(it) {
+    if (window.TopoSurf && (it.kind === 'surface' || it.kind === 'changement')) return TopoSurf.describe(it);
     switch (it.kind) {
       case 'arbre': return 'arbre, h ' + it.h.toFixed(1) + ' m, houppier Ø ' + it.d.toFixed(1) + ' m';
       case 'talus': return 'talus' + (it.h > 0 ? ' de ' + it.h.toFixed(2) + ' m' : '');
@@ -316,6 +324,19 @@
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     if (on('vege')) fillStroke(P.vege, 'rgba(70,140,70,.22)', C('vege'), 0.8);
     if (on('hydro')) { fillStroke(P.hydroS, 'rgba(60,130,200,.35)', null); fillStroke(P.hydro, null, C('hydro'), 1.6); }
+    // Surfaces d'après l'orthophoto, sous les courbes et les objets du plan détaillé
+    const PS = this.pp || {};
+    if (this.ds.plan && this.ds.plan.surf && window.TopoSurf) {
+      const I = TopoSurf.INFO;
+      for (const cls of TopoSurf.ORDER) {
+        const p = PS['s_' + cls];
+        if (!p || !on(I[cls].key)) continue;
+        ctx.globalAlpha = on('ortho') ? 0.32 : 0.55;
+        ctx.fillStyle = I[cls].color; ctx.fill(p, 'evenodd');
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = I[cls].color; ctx.lineWidth = lw(1.3); ctx.stroke(p);
+      }
+    }
     if (on('tin') && s > 2) fillStroke(P.tin, null, 'rgba(120,120,120,.45)', 0.5);
     if (on('contours')) { fillStroke(P.cNorm, null, C('contours'), 0.8); fillStroke(P.cMaster, null, C('contours'), 1.8); }
     if (on('routes')) fillStroke(P.routes, null, C('routes'), 2);
@@ -337,6 +358,7 @@
       if (on('fosses')) st('fosses', C('fosses'), 2.4);
       if (on('murs')) st('murs', C('murs'), 2.6);
       if (on('constructions')) st('constr', C('constructions'), 2, [3, 2]);
+      if (on('changements')) st('chg', C('changements'), 2.4, [7, 4]);
       ctx.setLineDash([]);
     }
 
@@ -405,6 +427,37 @@
           const p = scr(it.x - this.ox, it.y - this.oy);
           ctx.fillStyle = C('batCotes'); ctx.textAlign = 'center';
           it.lines.forEach((t, k) => ctx.fillText(t, p[0], p[1] + (k - (it.lines.length - 1) / 2) * 13));
+        } else if (it.kind === 'surface' && on('surfTxt') && on(TopoSurf.INFO[it.cls].key) && it.rad * s > 30) {
+          const p = scr(it.lx - this.ox, it.ly - this.oy);
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.fillStyle = '#1c2229';
+          ctx.font = '600 12px "Barlow Condensed", sans-serif';
+          ctx.strokeText(TopoSurf.INFO[it.cls].label, p[0], p[1] - 7); ctx.fillText(TopoSurf.INFO[it.cls].label, p[0], p[1] - 7);
+          ctx.font = '500 11px "JetBrains Mono", monospace';
+          const a = TopoSurf.fmtArea(it.area) + ' m²';
+          ctx.strokeText(a, p[0], p[1] + 7); ctx.fillText(a, p[0], p[1] + 7);
+        } else if (it.kind === 'changement' && on('changements')) {
+          const p = scr(it.x - this.ox, it.y - this.oy);
+          ctx.fillStyle = C('changements'); ctx.beginPath();
+          ctx.moveTo(p[0], p[1] - 9); ctx.lineTo(p[0] - 8, p[1] + 6); ctx.lineTo(p[0] + 8, p[1] + 6); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '700 11px "Barlow", sans-serif'; ctx.fillText('!', p[0], p[1] + 1);
+          ctx.font = '500 11px "JetBrains Mono", monospace';
+        }
+      }
+      // Indice de confiance : pastille verte, orange ou rouge sur chaque objet contrôlé
+      if (on('confiance')) {
+        for (const it of items) {
+          if (it.deleted || !it.conf || !on(TopoPlan.keyOf(it))) continue;
+          const a = TopoPlan.anchor(it);
+          if (!a) continue;
+          const p = scr(a[0] - this.ox, a[1] - this.oy);
+          ctx.setLineDash([]);
+          if (it.conf === 'faible') {
+            ctx.strokeStyle = '#e5262f'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(11, it.kind === 'arbre' ? (it.d / 2) * s + 4 : 0), 0, Math.PI * 2); ctx.stroke();
+          }
+          ctx.fillStyle = it.conf === 'bonne' ? '#2f9e44' : it.conf === 'moyenne' ? '#f08c00' : '#e5262f';
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(p[0], p[1], it.conf === 'bonne' ? 3.5 : 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
       }
       if (this.hover) {
@@ -415,8 +468,9 @@
           const p = scr(it.x - this.ox, it.y - this.oy); ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(8, (it.d || 0) / 2 * s), 0, Math.PI * 2); ctx.stroke();
         } else if (it.kind === 'talus') it.lines.forEach((l) => hl(l.coords));
         else if (it.kind === 'haie') it.paths.forEach((q) => hl(q));
-        else if (it.kind === 'massif') it.rings.forEach((q) => hl(q, true));
-        else hl(it.coords);
+        else if (it.kind === 'massif' || it.kind === 'surface') it.rings.forEach((q) => hl(q, true));
+        else if (it.kind === 'changement') { if (it.ring) hl(it.ring, true); else { const p = scr(it.x - this.ox, it.y - this.oy); ctx.beginPath(); ctx.arc(p[0], p[1], 12, 0, Math.PI * 2); ctx.stroke(); } }
+        else if (it.coords) hl(it.coords);
       }
     }
 
@@ -674,6 +728,17 @@
         a.push(p[0] - this.ox, zp + lift, -(p[1] - this.oy), q[0] - this.ox, zq + lift, -(q[1] - this.oy));
       }
     };
+    // Contour 2D posé sur le terrain : côtés redécoupés tous les 2 m.
+    const drape = (k, ring) => {
+      const out = [];
+      for (let i = 0; i < ring.length; i++) {
+        const p = ring[i], q = ring[(i + 1) % ring.length];
+        const m = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / 2));
+        for (let j = 0; j < m; j++) out.push([p[0] + (q[0] - p[0]) * j / m, p[1] + (q[1] - p[1]) * j / m]);
+      }
+      out.push(out[0]);
+      seg3(k, out);
+    };
     const trees = [];
     for (const it of ds.plan.items) {
       if (it.deleted) continue;
@@ -686,6 +751,8 @@
         case 'haie': it.paths.forEach((q) => seg3('haies', q)); break;
         case 'massif': it.rings.forEach((r) => seg3('massifs', r.concat([r[0]]))); break;
         case 'arbre': trees.push(it); break;
+        case 'surface': if (window.TopoSurf) it.rings.forEach((r) => drape(TopoSurf.INFO[it.cls].key, r)); break;
+        case 'changement': if (it.ring) drape('changements', it.ring); break;
       }
     }
     for (const k in arrs) {
@@ -829,6 +896,7 @@
     }
 
     function refresh() {
+      for (const k in counters) if (layers[k].countFn && counters[k].textContent !== '') counters[k].textContent = layers[k].countFn().toLocaleString('fr-FR');
       if (plan) plan.draw();
       if (terrain && !terrain.failed) terrain.apply();
       const n = Object.values(layers).filter((l) => l.available && l.on && l.exported !== false).length;
@@ -836,8 +904,49 @@
       $('pvCount').textContent = n + ' calque' + (n > 1 ? 's' : '') + ' à exporter';
     }
 
+    // Bilan des surfaces et répartition des indices de confiance
+    let bilanBox = null;
+    function renderBilan() {
+      if (!window.TopoSurf || !ds.plan || !ds.plan.surf) return;
+      const b = TopoSurf.bilan(ds.plan);
+      if (!b) return;
+      if (!bilanBox) { bilanBox = document.createElement('div'); bilanBox.className = 'pv-bilan'; list.append(bilanBox); }
+      bilanBox.innerHTML = '';
+      const h = document.createElement('p'); h.className = 'pv-dates-title'; h.textContent = 'Bilan des surfaces · zone d\'étude';
+      const tb = document.createElement('table');
+      const row = (label, color, a, b2, cls) => {
+        const tr = document.createElement('tr'); if (cls) tr.className = cls;
+        const t1 = document.createElement('td');
+        if (color) { const i = document.createElement('i'); i.style.background = color; t1.append(i); }
+        t1.append(label);
+        const t2 = document.createElement('td'); t2.textContent = a;
+        const t3 = document.createElement('td'); t3.textContent = b2;
+        tr.append(t1, t2, t3); tb.append(tr);
+      };
+      const m2 = (v) => TopoSurf.fmtArea(v) + ' m²';
+      const pc = (v) => v.toFixed(1).replace('.', ',') + ' %';
+      for (const r of b.rows) row(r.label, r.color, m2(r.area), pc(r.pct));
+      row('Imperméabilisé', null, m2(b.imper), pc(b.imperPct), 'sum');
+      if (b.cr === b.cr) row('Coef. de ruissellement', null, b.cr.toFixed(2).replace('.', ','), '', '');
+      const note = document.createElement('p'); note.textContent = 'Coefficients indicatifs, à adapter à votre note hydraulique. Retirer une surface la passe en « non classé ».';
+      bilanBox.append(h, tb, note);
+      if (ds.plan.items.some((it) => it.conf)) {
+        const cf = document.createElement('div'); cf.className = 'pv-conf';
+        for (const [lv, color, txt] of [['bonne', '#2f9e44', 'bonne'], ['moyenne', '#f08c00', 'moyenne'], ['faible', '#e5262f', 'à vérifier']]) {
+          const s = document.createElement('span'); const dot = document.createElement('b'); dot.style.background = color;
+          s.append(dot, TopoPlan.countConf(ds.plan, lv) + ' ' + txt); cf.append(s);
+        }
+        bilanBox.append(cf);
+      }
+    }
+    renderBilan();
+
     function planChanged() {
-      for (const k in counters) if (layers[k].plan && counters[k].textContent !== '') counters[k].textContent = TopoPlan.count(ds.plan, k).toLocaleString('fr-FR');
+      for (const k in counters) {
+        if (!layers[k].plan || counters[k].textContent === '') continue;
+        counters[k].textContent = (layers[k].countFn ? layers[k].countFn() : TopoPlan.count(ds.plan, k)).toLocaleString('fr-FR');
+      }
+      renderBilan();
       $('pvUndo').hidden = !removed.length;
       $('pvUndo').textContent = 'Rétablir (' + removed.length + ')';
       if (terrain && !terrain.failed) { terrain.buildPlan(); terrain.apply(); }

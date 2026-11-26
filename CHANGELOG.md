@@ -1,5 +1,17 @@
 # Journal des versions — ExporTopo
 
+## v1.5 — 26/11/2026
+- **Emprises récentes** : menu déroulant en tête de l'étape 1 pour rappeler les 20 dernières emprises (géométrie, parcelles, réglages, nom de l'affaire), enregistrées à chaque prévisualisation et export, dans le navigateur. Bouton « Retirer ».
+- **Fichier d'emprise** : « Enregistrer l'emprise (.geojson) » pour la partager, « Ouvrir un fichier d'emprise » pour la relire (Lambert-93 ou WGS84, dont le `emprise.geojson` d'un ancien ZIP, qui garde désormais l'affaire et les réglages).
+- **Nom de l'affaire** (facultatif) : repris dans le cartouche, le nom du ZIP et du DXF, le LISEZMOI.
+- **Surfaces d'après l'orthophoto** (plan détaillé) : espaces verts, chaussées, enrobés et trottoirs, parkings, stabilisé et gravier, cultures, eau et piscines, en polylignes fermées avec leur surface en m² (`SURF_*`). Sources : CoSIA IGN, orthophoto infrarouge, sursol LiDAR, BD TOPO, parkings OpenStreetMap.
+- **Bilan des surfaces** dans la prévisualisation et `surfaces.csv` : m², %, surface imperméabilisée, coefficient de ruissellement indicatif.
+- **Indice de confiance** vert / orange / rouge par objet (surfaces, arbres, haies, massifs, murs, cotes de bâtiment) ; objets à vérifier entourés avec le motif (`CTRL_A_VERIFIER`, `CTRL_CONFIANCE_MOYENNE`).
+- **Changements probables** entre le vol LiDAR et l'orthophoto (`CTRL_CHANGEMENTS`) : bâtiment démoli ou construit, bâti absent de la BD TOPO, arbre abattu.
+- Cartouche : affaire, date de l'orthophoto, millésime CoSIA, mention OpenStreetMap si utilisée. Légende complétée.
+- **Fin du cache gênant** : les scripts sont appelés avec `?v=1.5` et la page vérifie `version.json` ; si une version plus récente est en ligne, un bandeau propose « Recharger ».
+- Correction : la commune d'une zone précédente n'est plus reprise quand on trace une nouvelle zone ailleurs.
+
 ## v1.4 — 26/11/2026
 - Nouveau type d'export **Plan TN détaillé**, au choix en tête de l'étape 2, avec son chapitre et ses réglages (sensibilité, hauteur minimale des arbres).
 - Détection automatique sur le MNT et le MNS LiDAR HD : talus (crête, pied, barbules, hauteur), fossés et noues (fil d'eau coté, sens d'écoulement), lignes de crête, points hauts et bas, arbres (position, hauteur, houppier), haies, massifs boisés, murs et clôtures, cotes des bâtiments (hauteur, faîtage, TN au pied).

@@ -32,7 +32,11 @@
     constr: 'BDTOPO_V3:construction_lineaire',
     haie: 'BDTOPO_V3:haie',
     orthoMeta: 'ORTHOIMAGERY.ORTHOPHOTOS.GRAPHE-MOSAIQUAGE:graphe_bdortho',
+    cosia: ['IGNF_COSIA_2024-2026', 'IGNF_COSIA_2021-2023', 'IGNF_COSIA_2017-2020'], // du plus récent au plus ancien
+    irc: 'ORTHOIMAGERY.ORTHOPHOTOS.IRC',
+    equip: 'BDTOPO_V3:equipement_de_transport',
   };
+  const OVERPASS = 'https://overpass-api.de/api/interpreter';
   const MAX_TILE = 2000;           // pixels par requête WMS
   const MAX_AREA = 4e6;            // 4 km² d'emprise maximum
   const MAX_POINTS = 400000;
@@ -311,8 +315,9 @@
     renderZone();
   }
 
-  function setZone(ring, kind) {
-    if (kind !== 'parcelles') { state.parcels.clear(); state.parcelLayer.clearLayers(); }
+  function setZone(ring, kind, keepCommune) {
+    if (kind !== 'parcelles') { state.parcels.clear(); state.parcelLayer.clearLayers(); if (!keepCommune) state.commune = null; }
+    if (!keepCommune && $('histSel')) $('histSel').value = '';
     state.ring = ring;
     state.kind = kind;
     state.ds = null;
@@ -403,7 +408,7 @@
 
   function afterEdit() {
     if (state.kind === 'rectangle' && !isAxisRect(state.ring)) state.kind = 'polygone';
-    if (state.kind === 'parcelles' || state.kind === 'emprise saisie') state.kind = 'polygone';
+    if (state.kind === 'parcelles' || state.kind === 'emprise saisie' || state.kind === 'emprise importée') state.kind = 'polygone';
     state.ds = null;
     if (state.zoneLayer) state.zoneLayer.setLatLngs(state.ring.map(toWGS));
     renderGrips();
@@ -422,6 +427,7 @@
   function renderZone(light) {
     const box = $('zoneInfo');
     $('clearZone').hidden = !state.ring;
+    $('empSave').disabled = !state.ring;
     $('editHelp').hidden = !state.ring;
     $('exportBtn').disabled = !state.ring || state.busy;
     if (!state.ring) {
@@ -498,9 +504,9 @@
     }
   }
 
-  function refreshParcels() {
+  /** Dessine les parcelles sélectionnées ; renvoie tous leurs sommets. */
+  function drawParcels() {
     state.parcelLayer.clearLayers();
-    if (!state.parcels.size) { clearZone(); return; }
     let all = [];
     for (const f of state.parcels.values()) {
       partsOf(f.geometry).forEach((poly) => {
@@ -508,10 +514,194 @@
         L.polygon(poly[0].map(toWGS), { color: cssVar('--zone', '#00B4FF'), weight: 3, fillOpacity: 0.28, interactive: false }).addTo(state.parcelLayer);
       });
     }
+    return all;
+  }
+
+  function refreshParcels() {
+    if (!state.parcels.size) { state.parcelLayer.clearLayers(); clearZone(); return; }
+    const all = drawParcels();
     // Zone = rectangle englobant des parcelles + 10 m, pour saisir l'environnement immédiat (voirie, accès).
     const bb = T.ringBBox(all, 10);
     setZone([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]], 'parcelles');
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Historique des emprises (stocké dans ce navigateur)                 */
+  /* ------------------------------------------------------------------ */
+  const HIST_KEY = 'exportopo.history', HIST_MAX = 20;
+  // Champs qui ne sont pas des réglages d'export.
+  const NOT_SETTING = new Set(['searchInput', 'bxmin', 'bymin', 'bxmax', 'bymax', 'affaire', 'histSel', 'empFile']);
+  const r2 = (v) => Math.round(v * 100) / 100;
+
+  function histLoad() {
+    try {
+      const a = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+      return Array.isArray(a) ? a.filter((e) => e && Array.isArray(e.ring) && e.ring.length >= 3) : [];
+    } catch (e) { return []; }
+  }
+  function histStore(list) {
+    try { localStorage.setItem(HIST_KEY, JSON.stringify(list)); return true; } catch (e) {
+      // Stockage plein : on allège les entrées anciennes (parcelles) puis on réessaie.
+      try { list.forEach((x, i) => { if (i > 4) delete x.parcels; }); localStorage.setItem(HIST_KEY, JSON.stringify(list.slice(0, 12))); return true; } catch (e2) { return false; }
+    }
+  }
+  const ringKey = (r) => r.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(';');
+
+  function snapshotSettings() {
+    const s = {};
+    document.querySelectorAll('.panel input[id], .panel select[id]').forEach((el) => {
+      if (NOT_SETTING.has(el.id) || el.type === 'file' || el.classList.contains('allbox')) return;
+      s[el.id] = el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value;
+    });
+    return s;
+  }
+  function applySettings(s) {
+    if (!s) return;
+    for (const id in s) {
+      const el = $(id);
+      if (!el || NOT_SETTING.has(id)) continue;
+      if (el.type === 'checkbox' || el.type === 'radio') {
+        if (el.checked !== !!s[id]) { el.checked = !!s[id]; el.dispatchEvent(new Event('change')); }
+      } else if (el.value !== String(s[id])) {
+        if (el.tagName === 'SELECT' && !Array.from(el.options).some((o) => o.value === String(s[id]))) continue;
+        el.value = String(s[id]);
+        el.dispatchEvent(new Event('change'));
+      }
+    }
+  }
+
+  function histLabel(e) {
+    const d = new Date(e.t);
+    const when = isNaN(d) ? '' : d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    return [e.affaire, e.commune, areaTxt(e.area || T.ringArea(e.ring)), when].filter(Boolean).join(' · ');
+  }
+
+  function renderHist(selId) {
+    const sel = $('histSel'), list = histLoad();
+    sel.innerHTML = '';
+    const o0 = document.createElement('option');
+    o0.value = '';
+    o0.textContent = list.length ? 'Rappeler une emprise (' + list.length + ')…' : 'Aucune emprise enregistrée';
+    sel.append(o0);
+    list.forEach((e, i) => {
+      const o = document.createElement('option');
+      o.value = e.id;
+      o.textContent = (i === 0 ? 'Dernière : ' : '') + histLabel(e);
+      sel.append(o);
+    });
+    sel.disabled = !list.length;
+    sel.value = selId && list.some((e) => e.id === selId) ? selId : '';
+    $('histDel').disabled = !sel.value;
+  }
+
+  /** Enregistre l'emprise courante (et ses réglages) en tête de l'historique. */
+  function histSave() {
+    if (!state.ring) return;
+    const list = histLoad();
+    const ring = state.ring.map((p) => [r2(p[0]), r2(p[1])]);
+    const key = ringKey(ring);
+    const old = list.findIndex((e) => ringKey(e.ring) === key);
+    const prev = old >= 0 ? list.splice(old, 1)[0] : null;
+    const entry = {
+      id: prev ? prev.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      t: new Date().toISOString(),
+      ring, kind: state.kind, commune: state.commune || (prev && prev.commune) || null,
+      affaire: $('affaire').value.trim() || null,
+      area: Math.round(T.ringArea(ring)),
+      settings: snapshotSettings(),
+    };
+    if (state.parcels.size) {
+      const parcels = Array.from(state.parcels.values()).map((f) => ({ type: 'Feature', id: f.id, properties: { idu: f.properties.idu, section: f.properties.section, numero: f.properties.numero, nom_com: f.properties.nom_com }, geometry: roundGeom(f.geometry) }));
+      if (JSON.stringify(parcels).length < 200000) entry.parcels = parcels;
+    }
+    list.unshift(entry);
+    if (list.length > HIST_MAX) list.length = HIST_MAX;
+    if (histStore(list)) renderHist(entry.id);
+  }
+  function roundGeom(geom) {
+    const rc = (c) => (typeof c[0] === 'number' ? [r2(c[0]), r2(c[1])] : c.map(rc));
+    return { type: geom.type, coordinates: rc(geom.coordinates) };
+  }
+
+  /** Rappelle une emprise : géométrie, parcelles, réglages et nom de l'affaire. */
+  function restoreZone(e) {
+    if (state.busy) return;
+    setMode(null);
+    clearZone();
+    applySettings(e.settings);
+    $('affaire').value = e.affaire || '';
+    state.commune = e.commune || null;
+    setZone(e.ring.map((p) => p.slice()), e.kind || 'polygone', true);
+    if (e.parcels && e.parcels.length) {
+      for (const f of e.parcels) state.parcels.set((f.properties && f.properties.idu) || f.id, f);
+      drawParcels();
+      renderZone();
+    }
+    state.ds = null;
+    map.fitBounds(state.zoneLayer.getBounds(), { padding: [30, 30] });
+    log('Emprise rappelée : ' + histLabel(e) + '.', 'ok');
+  }
+
+  $('histSel').onchange = () => {
+    const id = $('histSel').value;
+    $('histDel').disabled = !id;
+    const e = histLoad().find((x) => x.id === id);
+    if (e) { restoreZone(e); $('histSel').value = id; $('histDel').disabled = false; }
+  };
+  $('histDel').onclick = () => {
+    const id = $('histSel').value;
+    if (!id) return;
+    histStore(histLoad().filter((e) => e.id !== id));
+    renderHist();
+  };
+
+  /** Emprise au format GeoJSON (Lambert-93), relisible par ExporTopo, QGIS, AutoCAD Map… */
+  function zoneGeoJSON() {
+    const ring = state.ring.map((p) => [r2(p[0]), r2(p[1])]);
+    return {
+      type: 'Feature',
+      properties: {
+        affaire: $('affaire').value.trim() || null, commune: state.commune || null, type: state.kind,
+        surface_m2: Math.round(T.ringArea(state.ring)), date: new Date().toISOString().slice(0, 10),
+        logiciel: 'ExporTopo v' + T.VERSION, reglages: snapshotSettings(),
+      },
+      geometry: { type: 'Polygon', coordinates: [ring.concat([ring[0]])] },
+    };
+  }
+
+  $('empSave').onclick = () => {
+    if (!state.ring) return;
+    const name = 'emprise_' + slug($('affaire').value.trim() || state.commune || 'zone') + '_' + new Date().toISOString().slice(0, 10) + '.geojson';
+    download(new Blob(T.toGeoJSON([zoneGeoJSON()], 'emprise'), { type: 'application/geo+json' }), name);
+    histSave();
+  };
+  $('empOpen').onclick = () => { $('empFile').value = ''; $('empFile').click(); };
+  $('empFile').onchange = async () => {
+    const file = $('empFile').files[0];
+    if (!file) return;
+    try {
+      const js = JSON.parse(await file.text());
+      const feats = js.type === 'FeatureCollection' ? js.features : js.type === 'Feature' ? [js] : [{ type: 'Feature', properties: {}, geometry: js }];
+      let best = null, bestA = 0;
+      for (const f of feats || []) {
+        for (const poly of partsOf(f && f.geometry)) {
+          let r = T.stripClosing(poly[0].map((p) => [Number(p[0]), Number(p[1])]));
+          if (r.length < 3) continue;
+          // Coordonnées géographiques (WGS84) converties en Lambert-93.
+          if (r.every((p) => Math.abs(p[0]) <= 180 && Math.abs(p[1]) <= 90)) r = r.map((p) => toL93(L.latLng(p[1], p[0])));
+          const a = T.ringArea(r);
+          if (a > bestA) { bestA = a; best = { ring: r, props: (f && f.properties) || {} }; }
+        }
+      }
+      if (!best) throw new Error('aucun polygone dans ce fichier');
+      const bb = T.ringBBox(best.ring);
+      if (bb[0] < 50000 || bb[2] > 1300000 || bb[1] < 6000000 || bb[3] > 7200000) throw new Error('coordonnées hors de France métropolitaine (Lambert-93 ou WGS84 attendus)');
+      const p = best.props;
+      restoreZone({ ring: best.ring.map((q) => [r2(q[0]), r2(q[1])]), kind: 'emprise importée', commune: p.commune || p.nom_com || null, affaire: p.affaire || '', settings: p.reglages || null, area: bestA, t: p.date || new Date().toISOString() });
+    } catch (err) {
+      log('Fichier d\'emprise illisible : ' + err.message + '.', 'err');
+    }
+  };
 
   /* ------------------------------------------------------------------ */
   /* Recherche d'adresse (géocodage Géoplateforme)                      */
@@ -683,6 +873,77 @@
     return { canvas: cv, res, w, h, xmin: bb[0], ymax: bb[3] };
   }
 
+  /** Image WMS-R (couleurs RVBA) sur la grille g = { xmin, ymax, res, w, h }. */
+  async function fetchImage(layer, g, format) {
+    const cv = document.createElement('canvas');
+    cv.width = g.w; cv.height = g.h;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const tasks = [];
+    for (let ty = 0; ty < g.h; ty += MAX_TILE) {
+      for (let tx = 0; tx < g.w; tx += MAX_TILE) {
+        const tw = Math.min(MAX_TILE, g.w - tx), th = Math.min(MAX_TILE, g.h - ty);
+        const x0 = g.xmin + tx * g.res, y1 = g.ymax - ty * g.res;
+        const tb = [x0, y1 - th * g.res, x0 + tw * g.res, y1];
+        tasks.push(async () => {
+          const url = WMSR + '?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=' + encodeURIComponent(layer) + '&STYLES=&CRS=EPSG:2154' +
+            '&BBOX=' + tb.map((v) => v.toFixed(3)).join(',') + '&WIDTH=' + tw + '&HEIGHT=' + th + '&FORMAT=' + format + (format === 'image/png' ? '&TRANSPARENT=true' : '');
+          const r = await fetchRetry(url, 2);
+          const blob = await r.blob();
+          if (blob.type.indexOf('image') !== 0) {
+            const txt = await blob.text();
+            const m = txt.match(/<(?:ows:)?ExceptionText>([\s\S]*?)<\//) || txt.match(/<ServiceException[^>]*>([\s\S]*?)<\//);
+            throw new Error(m ? m[1].trim() : 'réponse inattendue');
+          }
+          const bmp = await createImageBitmap(blob);
+          ctx.drawImage(bmp, tx, ty, tw, th);
+        });
+      }
+    }
+    await pool(tasks, 3);
+    return ctx.getImageData(0, 0, g.w, g.h).data;
+  }
+
+  /** Parkings de surface d'OpenStreetMap (Overpass), en Lambert-93. Échec silencieux. */
+  async function osmParkings(bb) {
+    const c = [[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]].map(toWGS);
+    const s = Math.min(...c.map((p) => p.lat)), n = Math.max(...c.map((p) => p.lat));
+    const w = Math.min(...c.map((p) => p.lng)), e = Math.max(...c.map((p) => p.lng));
+    const box = [s, w, n, e].map((v) => v.toFixed(6)).join(',');
+    const q = '[out:json][timeout:25];(way["amenity"="parking"](' + box + ');relation["amenity"="parking"](' + box + '););out geom;';
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 30000);
+    try {
+      const r = await fetch(OVERPASS, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const js = await r.json();
+      const out = [];
+      const ringOf = (geom) => (geom && geom.length >= 4 ? geom.map((p) => toL93(L.latLng(p.lat, p.lon))) : null);
+      for (const el of js.elements || []) {
+        const tg = el.tags || {};
+        if (/underground|multi-storey|rooftop/.test(tg.parking || '')) continue; // pas en surface
+        if (el.type === 'way') {
+          const r0 = ringOf(el.geometry);
+          if (r0 && r0[0][0] === r0[r0.length - 1][0] && r0[0][1] === r0[r0.length - 1][1]) out.push({ source: 'osm', properties: tg, geometry: { type: 'Polygon', coordinates: [r0] } });
+        } else if (el.type === 'relation') {
+          for (const m of el.members || []) {
+            if (m.role !== 'outer') continue;
+            const r0 = ringOf(m.geometry);
+            if (r0) out.push({ source: 'osm', properties: tg, geometry: { type: 'Polygon', coordinates: [r0] } });
+          }
+        }
+      }
+      return out;
+    } finally { clearTimeout(to); }
+  }
+
+  /** Date la plus récente d'un libellé « jj/mm/aaaa » ou « jj/mm/aaaa au jj/mm/aaaa ». */
+  function lastDate(s) {
+    const m = String(s || '').match(/\d{2}\/\d{2}\/\d{4}/g);
+    if (!m) return null;
+    const d = m[m.length - 1].split('/');
+    return d[2] + '-' + d[1] + '-' + d[0];
+  }
+
 
   /* ------------------------------------------------------------------ */
   /* Journal et progression                                              */
@@ -768,9 +1029,16 @@
         constructions: $('pConstr').checked, batCotes: $('pBatCotes').checked,
         cartouche: $('pCartouche').checked, legende: $('pLegende').checked, nord: $('pNord').checked, quadrillage: $('pQuadrillage').checked,
         sensi: $('pSensi').value, hmin: parseFloat($('pHmin').value),
+        surf: {
+          ev: $('sEV').checked, enrobe: $('sEnrobe').checked, parking: $('sParking').checked, permeable: $('sPermeable').checked,
+          cultures: $('sCultures').checked, eau: $('sEau').checked, txt: $('sTxt').checked,
+        },
+        conf: $('cConf').checked, chang: $('cChang').checked,
       } : null,
     };
   }
+  /** Le plan détaillé demande-t-il l'analyse de l'orthophoto ? */
+  const wantsSurf = (P) => !!P && (Object.keys(P.surf).some((k) => k !== 'txt' && P.surf[k]) || P.conf || P.chang);
 
   $('exportBtn').onclick = async () => {
     try {
@@ -780,6 +1048,7 @@
         state.ds = await prepare(opt);
         state.ds.key = key;
       }
+      histSave();
       openPreview(state.ds);
     } catch (err) {
       log('Préparation interrompue : ' + err.message, 'err');
@@ -904,15 +1173,27 @@
       if (!flag) return;
       vtasks.push(async () => { try { aux[key] = await wfs(layer, vecBB); } catch (e) { aux[key] = null; log('Plan détaillé : ' + key + ' non récupéré (' + e.message + ')', 'warn'); } vdone++; });
     };
+    const SURF = wantsSurf(P);
     if (P) {
       wantAux(!opt.bati, 'bati', SRC.bati);
       wantAux(!opt.cadBati, 'cadBati', SRC.cadBati);
       wantAux(P.constructions, 'constructions', SRC.constr);
       wantAux(P.haies, 'haies', SRC.haie);
     }
+    if (SURF) {
+      wantAux(!opt.routes, 'routes', SRC.route);
+      wantAux(!opt.hydro, 'hydroS', SRC.hydroS);
+      wantAux(P.surf.parking, 'equip', SRC.equip);
+      if (P.surf.parking) {
+        vtasks.push(async () => {
+          try { aux.osm = await osmParkings(vecBB); } catch (e) { aux.osm = null; log('Parkings OpenStreetMap non récupérés (' + (e.name === 'AbortError' ? 'délai dépassé' : e.message) + ') : parkings BD TOPO seuls.', 'warn'); }
+          vdone++;
+        });
+      }
+    }
     const meta = {};
     vtasks.push(async () => { try { meta.lidar = await wfs(SRC.lidarMeta, bb, 500); } catch (e) { meta.lidar = null; } vdone++; });
-    if (opt.ortho) vtasks.push(async () => { try { meta.ortho = await wfs(SRC.orthoMeta, bb, 500); } catch (e) { meta.ortho = null; } vdone++; });
+    if (opt.ortho || SURF) vtasks.push(async () => { try { meta.ortho = await wfs(SRC.orthoMeta, bb, 500); } catch (e) { meta.ortho = null; } vdone++; });
     log('Cadastre, BD TOPO et dates des données…', 'run');
     await pool(vtasks, 4);
     if (state.parcels.size) vectors.projet = Array.from(state.parcels.values());
@@ -940,7 +1221,7 @@
     // Plan TN détaillé : sursol LiDAR (MNS) et détection automatique
     if (P) {
       let mns = null;
-      if (P.arbres || P.haies || P.massifs || P.murs || P.batCotes) {
+      if (P.arbres || P.haies || P.massifs || P.murs || P.batCotes || SURF) {
         progress(0.64, 'Sursol LiDAR HD (MNS)');
         const lm = log('MNS LiDAR HD (hauteur des arbres et du bâti)…', 'run');
         try {
@@ -960,14 +1241,15 @@
         buildings: vectors.bati || aux.bati || [], cadBati: vectors.cadBati || aux.cadBati || [],
         constructions: aux.constructions || null, haiesIgn: aux.haies || null,
         opts: Object.assign({ scale: opt.scale }, P),
-      }, (f, label) => progress(0.7 + 0.05 * f, 'Plan détaillé : ' + label));
+      }, (f, label) => progress(0.7 + 0.04 * f, 'Plan détaillé : ' + label));
       const c = (k) => TopoPlan.count(ds.plan, k);
       log('Plan détaillé (' + fr((Date.now() - t0) / 1000, 1) + ' s) : ' + c('talus') + ' talus, ' + c('fosses') + ' fossés/noues, ' + c('arbres') + ' arbres, ' +
         c('haies') + ' haies, ' + c('massifs') + ' massifs, ' + c('murs') + ' murs/clôtures, ' + c('batCotes') + ' bâtiments cotés.', 'ok');
+      if (SURF) await surfaces(ds, { P, mns, aux, dates });
     }
 
     // Aperçu : allégé si la précision demandée est lourde, pour ne pas bloquer le navigateur.
-    progress(0.75, 'Calcul de l\'aperçu');
+    progress(0.83, 'Calcul de l\'aperçu');
     await frame();
     const view = { step, interval: opt.interval, semis: null, faces: null, lines: null, lightPts: false, lightContours: false };
     if (opt.points || opt.tin) {
@@ -976,7 +1258,7 @@
       if (opt.tin) view.faces = T.gridTIN(view.semis, ring, opt.margin);
       log('Semis : ' + (view.lightPts ? 'environ ' + fr(estPts) + ' points au pas de ' + fr(step, 2) + ' m (aperçu au pas de ' + fr(view.step, 2) + ' m).' : fr(view.semis.points.length) + ' points au pas de ' + fr(step, 2) + ' m.'), 'ok');
     }
-    progress(0.85, 'Courbes de niveau de l\'aperçu');
+    progress(0.9, 'Courbes de niveau de l\'aperçu');
     await frame();
     if (opt.contours) {
       const full = contourParams(ds, false), prm = contourParams(ds, true);
@@ -992,6 +1274,79 @@
     progress(1, 'Prêt');
     log('Données prêtes : ouverture de la prévisualisation.', 'ok');
     return ds;
+  }
+
+  /**
+   * Surfaces d'après l'orthophoto (CoSIA, infrarouge, couleur), indice de confiance et changements :
+   * les objets sont ajoutés au plan détaillé.
+   */
+  async function surfaces(ds, ctx) {
+    const { P, mns, aux, dates } = ctx;
+    const bb = ds.bb, opt = ds.opt;
+    progress(0.75, 'Surfaces : occupation du sol CoSIA');
+    const ls = log('Surfaces : occupation du sol (CoSIA), orthophoto infrarouge et couleur…', 'run');
+    // Grille de travail de 25 cm (résolution CoSIA ~20 cm) à 2 m selon la taille de la zone.
+    let sr = 0.25;
+    const ext = (bb[2] - bb[0]) * (bb[3] - bb[1]);
+    while (ext / (sr * sr) > 3.5e6 && sr < 2) sr *= 2;
+    const sg = { xmin: bb[0], ymax: bb[3], res: sr, w: Math.round((bb[2] - bb[0]) / sr), h: Math.round((bb[3] - bb[1]) / sr) };
+    const n = sg.w * sg.h;
+    const filled = (a) => { let k = 0; for (let i = 0; i < a.length; i++) if (a[i]) k++; return k / a.length; };
+
+    let cosia = null;
+    const used = [];
+    for (const layer of SRC.cosia) {
+      try {
+        const img = await fetchImage(layer, sg, 'image/png');
+        const before = cosia ? filled(cosia) : 0;
+        cosia = TopoSurf.decodeCosia(img, n, cosia);
+        if (filled(cosia) > before + 0.01) used.push(layer.replace('IGNF_COSIA_', ''));
+        if (filled(cosia) > 0.97) break;
+      } catch (e) { /* millésime non publié sur ce secteur */ }
+    }
+    const cov = cosia ? filled(cosia) : 0;
+    if (cov < 0.3) cosia = null;
+    progress(0.77, 'Surfaces : orthophoto infrarouge');
+    let irc = null;
+    try { irc = await fetchImage(SRC.irc, sg, 'image/jpeg'); } catch (e) { log('Orthophoto infrarouge indisponible (' + e.message + ').', 'warn'); }
+    let rgb = null;
+    if (ds.ortho) {
+      const cv = document.createElement('canvas');
+      cv.width = sg.w; cv.height = sg.h;
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(ds.ortho.canvas, 0, 0, sg.w, sg.h);
+      rgb = cx.getImageData(0, 0, sg.w, sg.h).data;
+    }
+    if (!cosia && !irc && !rgb) {
+      ls.className = 'warn';
+      ls.firstChild.textContent = 'Surfaces non calculées : ni CoSIA, ni orthophoto infrarouge ou couleur sur cette zone.';
+      return;
+    }
+    const parkings = [];
+    for (const f of aux.equip || []) if (/parking/i.test(String((f.properties || {}).nature || ''))) parkings.push({ source: 'ign', properties: f.properties, geometry: f.geometry });
+    for (const f of aux.osm || []) parkings.push(f);
+    const dl = lastDate(dates.lidar && dates.lidar.vol), dor = lastDate(dates.ortho && dates.ortho.vol);
+    const order = dl && dor ? (dor > dl ? 'ortho' : 'lidar') : null;
+    const t0 = Date.now();
+    const v = ds.vectors;
+    const res = await TopoSurf.analyse({
+      g: sg, ring: ds.ring, margin: opt.margin, cosia, cosiaLayer: used.join(' + ') || null, irc, rgb, mnt: ds.grid, mns,
+      buildings: v.bati || aux.bati || [], cadBati: v.cadBati || aux.cadBati || [], hydroS: v.hydroS || aux.hydroS || [], routes: v.routes || aux.routes || [],
+      parkings, plan: ds.plan, order, opts: { scale: opt.scale, conf: P.conf, chang: P.chang },
+    }, (f, label) => progress(0.78 + 0.04 * f, 'Surfaces : ' + label));
+    let uid = ds.plan.items.reduce((m, it) => Math.max(m, it.id || 0), 0);
+    for (const it of res.items) { it.id = ++uid; ds.plan.items.push(it); }
+    res.info.order = order;
+    res.info.dates = { lidar: dl, ortho: dor };
+    ds.plan.surf = res.info;
+    if (cosia) dates.lines.push({ label: 'CoSIA', value: 'occupation du sol IGN, millésime ' + used.join(' + ') });
+    const c = (k) => TopoPlan.count(ds.plan, k);
+    const src = cosia ? 'CoSIA ' + used.join(' + ') + ' (' + fr(cov * 100) + ' % de la zone)' + (irc ? ' + infrarouge' : '') : irc ? 'infrarouge et LiDAR (CoSIA absent)' : 'couleur et LiDAR (CoSIA et infrarouge absents)';
+    ls.className = 'ok';
+    ls.firstChild.textContent = 'Surfaces (' + fr((Date.now() - t0) / 1000, 1) + ' s, ' + src + ') : ' + c('surfEV') + ' espaces verts, ' + (c('surfChaussee') + c('surfEnrobe')) + ' chaussées et enrobés, ' +
+      c('surfParking') + ' parkings, ' + c('surfPermeable') + ' surfaces perméables, ' + c('surfEau') + ' eau et piscines.';
+    if (P.conf) log('Contrôle de cohérence : ' + TopoPlan.countConf(ds.plan, 'bonne') + ' objets confirmés, ' + TopoPlan.countConf(ds.plan, 'moyenne') + ' à confiance moyenne, ' + TopoPlan.countConf(ds.plan, 'faible') + ' à vérifier.', TopoPlan.countConf(ds.plan, 'faible') ? 'warn' : 'ok');
+    if (P.chang) log('Changements probables entre le LiDAR' + (dl ? ' (' + frDate(dl) + ')' : '') + ' et l\'orthophoto' + (dor ? ' (' + frDate(dor) + ')' : '') + ' : ' + c('changements') + '.', c('changements') ? 'warn' : 'ok');
   }
 
   /** Millésimes des données IGN interrogées. */
@@ -1104,15 +1459,44 @@
       murs: d('murs', 'Murs et clôtures (LiDAR, indicatif)', '#616161', null, P.murs),
       constructions: d('constructions', 'Constructions linéaires IGN', '#8d6e63', null, P.constructions),
       batCotes: d('batCotes', 'Cotes des bâtiments', '#37474f', null, P.batCotes),
-      cartouche: lay('Cartouche', P.cartouche),
-      legende: lay('Légende', P.legende),
-      nord: lay('Flèche du nord', P.nord),
-      quadrillage: lay('Quadrillage Lambert-93', P.quadrillage),
+      ...surfDefs(ds),
+      cartouche: Object.assign(lay('Cartouche', P.cartouche), { group: 'Mise en page' }),
+      legende: Object.assign(lay('Légende', P.legende), { group: 'Mise en page' }),
+      nord: Object.assign(lay('Flèche du nord', P.nord), { group: 'Mise en page' }),
+      quadrillage: Object.assign(lay('Quadrillage Lambert-93', P.quadrillage), { group: 'Mise en page' }),
     };
+  }
+
+  /** Calques des surfaces (orthophoto) et du contrôle de cohérence. */
+  function surfDefs(ds) {
+    const P = ds.opt.plan;
+    if (!ds.plan.surf) return {};
+    const I = TopoSurf.INFO, G = 'Surfaces (orthophoto)', Gc = 'Contrôle de cohérence';
+    const c = (k) => TopoPlan.count(ds.plan, k);
+    const d = (key, label, color, flag, note) => ({ group: G, label, color, count: c(key), available: !!flag && c(key) > 0, on: true, note, plan: true });
+    const anySurf = ['surfEV', 'surfChaussee', 'surfEnrobe', 'surfParking', 'surfPermeable', 'surfCultures', 'surfEau'].some((k) => c(k) > 0);
+    const S = P.surf;
+    const lay = {
+      surfEV: d('surfEV', 'Espaces verts', I.ev.color, S.ev),
+      surfChaussee: d('surfChaussee', 'Chaussées', I.chaussee.color, S.enrobe, 'Largeur d\'après la BD TOPO'),
+      surfEnrobe: d('surfEnrobe', 'Enrobés, bétons, trottoirs', I.enrobe.color, S.enrobe),
+      surfParking: d('surfParking', 'Parkings', I.parking.color, S.parking),
+      surfPermeable: d('surfPermeable', 'Stabilisé, gravier, terre', I.permeable.color, S.permeable),
+      surfCultures: d('surfCultures', 'Cultures', I.cultures.color, S.cultures),
+      surfEau: d('surfEau', 'Eau et piscines', I.eau.color, S.eau),
+      surfTxt: { group: G, label: 'Surfaces écrites (m²)', color: null, available: !!S.txt && anySurf, on: true, plan: true },
+    };
+    const isOn = (k) => ds.layers && ds.layers[k] ? ds.layers[k].on && ds.layers[k].available : true;
+    lay.confiance = { group: Gc, label: 'Indice de confiance', color: '#e5262f', available: !!P.conf && ds.plan.items.some((it) => it.conf), on: true, plan: true,
+      count: TopoPlan.countConf(ds.plan, 'faible'), countFn: () => TopoPlan.countConf(ds.plan, 'faible', isOn),
+      note: 'Rouge : à vérifier · orange : moyenne · vert : bonne' };
+    lay.changements = { group: Gc, label: 'Changements LiDAR / orthophoto', color: '#c2185b', count: c('changements'), available: !!P.chang && c('changements') > 0, on: true, plan: true };
+    return lay;
   }
 
   function openPreview(ds) {
     const layers = layerDefs(ds);
+    ds.layers = layers;
     TopoPreview.open(ds, layers, (lay, status) => exportFinal(ds, lay, status));
   }
 
@@ -1125,9 +1509,11 @@
     const on = (k) => lay[k] && lay[k].available && lay[k].on;
     const o = ds.opt;
     const files = {};
-    const name = slug(ds.commune || ('L93_' + Math.round((ds.zoneBB[0] + ds.zoneBB[2]) / 2) + '_' + Math.round((ds.zoneBB[1] + ds.zoneBB[3]) / 2)));
+    const affaire = $('affaire').value.trim();
+    const name = slug(affaire || ds.commune || ('L93_' + Math.round((ds.zoneBB[0] + ds.zoneBB[2]) / 2) + '_' + Math.round((ds.zoneBB[1] + ds.zoneBB[3]) / 2)));
     const date = new Date().toISOString().slice(0, 10);
     const base = 'TN_' + name + '_' + date;
+    const surf = ds.plan && ds.plan.surf;
     const th = (2 * o.scale) / 1000; // 2 mm à l'échelle du plan : plafond des textes
 
     const full = (on('points') || on('tin') || on('contours')) ? await computeFull(ds, status) : {};
@@ -1150,8 +1536,11 @@
       extra: ds.plan ? (dxf, h) => TopoPlan.writeDXF(dxf, ds.plan, {
         on, th: h, scale: o.scale,
         layout: (on('cartouche') || on('legende') || on('nord') || on('quadrillage')) ? {
-          zoneBB: ds.zoneBB, commune: ds.commune, version: T.VERSION, date: frDate(date),
-          dates: ds.dates.lines.filter((l) => /LiDAR|BD TOPO|Cadastre/.test(l.label)).map((l) => l.label + ' : ' + l.value),
+          zoneBB: ds.zoneBB, commune: ds.commune, version: T.VERSION, date: frDate(date), affaire,
+          dates: ds.dates.lines.filter((l) => (surf ? /LiDAR|BD TOPO|Cadastre|Orthophoto|CoSIA/ : /LiDAR|BD TOPO|Cadastre/).test(l.label)).map((l) => l.label + ' : ' + l.value),
+          sources: 'Sources : IGN — LiDAR HD, BD TOPO, Parcellaire Express, BD ORTHO' + (surf && surf.cosiaLayer ? ', CoSIA' : ''),
+          notes: surf && surf.osm && on('surfParking') ? ['Parkings : © contributeurs OpenStreetMap (ODbL)'] : [],
+          extraLegend: surf ? TopoSurf.legend(ds.plan, on) : [],
           base: [on('points') ? ['Point TN coté', 'point'] : null, on('contours') ? ['Courbe de niveau', 'line'] : null, on('parcelles') ? ['Limite parcellaire', 'line'] : null].filter(Boolean),
         } : null,
       }) : null });
@@ -1183,7 +1572,8 @@
     }
     status('Écriture des GeoJSON…');
     await frame();
-    const gj = { emprise: [{ type: 'Feature', properties: { surface_m2: Math.round(T.ringArea(ds.ring)) }, geometry: { type: 'Polygon', coordinates: [ds.ring.concat([ds.ring[0]])] } }] };
+    // L'emprise du ZIP garde l'affaire et les réglages : « Ouvrir un fichier d'emprise » la relit telle quelle.
+    const gj = { emprise: [state.ring && ringKey(state.ring) === ringKey(ds.ring) ? zoneGeoJSON() : { type: 'Feature', properties: { surface_m2: Math.round(T.ringArea(ds.ring)), affaire: affaire || null, commune: ds.commune || null }, geometry: { type: 'Polygon', coordinates: [ds.ring.concat([ds.ring[0]])] } }] };
     if (on('points')) gj.points_TN = T.pointsToFeatures(pts);
     if (on('contours')) gj.courbes_niveau = T.contoursToFeatures(full.lines);
     for (const k in vectors) if (vectors[k]) gj[k] = vectors[k];
@@ -1191,6 +1581,7 @@
       const pf = TopoPlan.toFeatures(ds.plan, on);
       for (const k in pf) gj[k] = pf[k];
       if (on('arbres') && TopoPlan.count(ds.plan, 'arbres')) files['arbres.csv'] = TopoPlan.treesTxt(ds.plan);
+      if (surf && on('surfTxt')) files['surfaces.csv'] = textBlob(TopoSurf.bilanCSV(TopoSurf.bilan(ds.plan)));
     }
     for (const k in gj) files['geojson/' + k + '.geojson'] = textBlob(T.toGeoJSON(gj[k], k));
 
@@ -1203,6 +1594,7 @@
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
       (m) => status('Compression de l\'archive… ' + Math.round(m.percent) + ' %'));
     download(blob, base + '.zip');
+    if (state.ring && ringKey(state.ring) === ringKey(ds.ring)) histSave();
     const msg = 'Archive téléchargée : ' + base + '.zip (' + fr(blob.size / 1e6, 1) + ' Mo, ' + Object.keys(files).length + ' fichiers).';
     log(msg, 'ok');
     return msg;
@@ -1239,6 +1631,7 @@
       '========================================',
       '',
       'Date de l\'export : ' + date,
+      'Affaire : ' + ($('affaire').value.trim() || 'non renseignée'),
       'Commune : ' + (ds.commune || 'non déterminée'),
       'Système : RGF93 v1 / Lambert-93 (EPSG:2154), altitudes NGF-IGN69 (France métropolitaine).',
       'Emprise : X ' + f(bb[0]) + ' à ' + f(bb[2]) + ' ; Y ' + f(bb[1]) + ' à ' + f(bb[3]),
@@ -1261,6 +1654,36 @@
         '  Limites : détection automatique. Les talus et fossés sous couvert boisé, les clôtures légères, bordures,',
         '  regards et réseaux ne sont pas fiables ou pas visibles. Contrôler le plan avant toute utilisation.');
     }
+    const S = ds.plan && ds.plan.surf;
+    if (S) {
+      const b = TopoSurf.bilan(ds.plan);
+      const c = (k) => (on(k) ? TopoPlan.count(ds.plan, k) : 0);
+      const src = S.cosiaLayer ? 'CoSIA IGN (millésime ' + S.cosiaLayer + ', ' + Math.round(S.cosia * 100) + ' % de la zone)' : 'indices de l\'orthophoto (CoSIA non disponible sur la zone)';
+      out.push('', 'SURFACES D\'APRÈS L\'ORTHOPHOTO (polylignes fermées, à hachurer au besoin)',
+        '  Source : ' + src + (S.ndvi ? ', orthophoto infrarouge (NDVI)' : '') + (S.rgb ? ', orthophoto couleur' : '') + (S.lidar ? ', hauteur du sursol LiDAR HD' : '') + ',',
+        '  bâti, voirie et eau BD TOPO, parkings BD TOPO' + (S.osm ? ' et OpenStreetMap (© contributeurs OpenStreetMap, licence ODbL)' : '') + '. Grille de calcul : ' + S.res + ' m.',
+        '  Espaces verts : ' + c('surfEV') + ' (SURF_ESPACES_VERTS) ; chaussées : ' + c('surfChaussee') + ' (SURF_CHAUSSEE, largeur BD TOPO) ;',
+        '  enrobés, bétons, trottoirs : ' + c('surfEnrobe') + ' (SURF_ENROBE) ; parkings : ' + c('surfParking') + ' (SURF_PARKING) ;',
+        '  stabilisé, gravier, terre : ' + c('surfPermeable') + ' (SURF_PERMEABLE) ; cultures : ' + c('surfCultures') + ' (SURF_CULTURES) ; eau et piscines : ' + c('surfEau') + ' (SURF_EAU).',
+        '  Surfaces écrites en m² sur SURF_TEXTE ; trous (bâtiments, îlots) en polylignes fermées séparées.',
+        '  Bilan de la zone d\'étude (fichier surfaces.csv) :');
+      for (const r of b.rows) out.push('    ' + r.label + ' : ' + Math.round(r.area) + ' m² (' + r.pct.toFixed(1) + ' %)');
+      out.push('    Surface imperméabilisée : ' + Math.round(b.imper) + ' m² (' + b.imperPct.toFixed(1) + ' %)' + (b.cr === b.cr ? ' ; coefficient de ruissellement moyen indicatif : ' + b.cr.toFixed(2) : ''),
+        '    Coefficients indicatifs : toitures 0,95 ; chaussées, enrobés, parkings 0,90 ; stabilisé 0,40 ; espaces verts et cultures 0,20 ; eau 1,00.',
+        '  Limites : l\'orthophoto montre le dessus des choses (houppiers, toitures en dévers) ; sous les arbres, le sol est déduit.',
+        '  Les limites sont précises à environ ' + Math.max(0.5, S.res * 2) + ' m. Une bordure, un fil d\'eau ou une limite de revêtement restent à lever.');
+    }
+    if (S && (on('confiance') || on('changements'))) {
+      const cc = (l) => TopoPlan.countConf(ds.plan, l, on);
+      out.push('', 'CONTRÔLE DE COHÉRENCE');
+      if (on('confiance')) out.push('  Indice de confiance (recoupement LiDAR, infrarouge, CoSIA) : ' + cc('bonne') + ' bon(s), ' + cc('moyenne') + ' moyen(s), ' + cc('faible') + ' à vérifier.',
+        '  Calques : CTRL_A_VERIFIER (cercle rouge, motif écrit) et CTRL_CONFIANCE_MOYENNE (cercle orange). Champ « confiance » dans les GeoJSON.');
+      if (on('changements')) {
+        const dd = S.dates || {};
+        out.push('  Changements probables entre le vol LiDAR' + (dd.lidar ? ' (' + frDate(dd.lidar) + ')' : '') + ' et l\'orthophoto' + (dd.ortho ? ' (' + frDate(dd.ortho) + ')' : '') + ' : ' + TopoPlan.count(ds.plan, 'changements') + ' (CTRL_CHANGEMENTS).');
+        for (const it of ds.plan.items) if (it.kind === 'changement' && !it.deleted) out.push('    X ' + it.x.toFixed(1) + ' Y ' + it.y.toFixed(1) + ' : ' + it.text);
+      }
+    }
     out.push('', 'TERRAIN',
       '  MNT source : LiDAR HD IGN au pas de ' + ds.res + ' m (couverture ' + f(st.lidar * 100, 1) + ' %' + (st.rge ? ', complété par RGE ALTI sur ' + f(st.rge * 100, 1) + ' %' : '') + ')',
       '  Altitudes : ' + f(st.zmin) + ' m à ' + f(st.zmax) + ' m');
@@ -1273,7 +1696,9 @@
     if (on('tin')) out.push('  MNT_TN.xml : surface TIN LandXML 1.2 (Civil 3D, Covadis, Mensura, Trimble, Leica…).');
     if (on('asc')) out.push('  MNT_*.asc : grille altimétrique brute (ESRI ASCII) + .prj.');
     if (on('ortho')) out.push('  orthophoto.jpg + .jgw : image calée en Lambert-93 (insertion d\'image géoréférencée).');
-    out.push('  geojson/ : couches pour QGIS (EPSG:2154).',
+    if (S && on('surfTxt')) out.push('  surfaces.csv : bilan des surfaces (classe ; m² ; % ; coefficient de ruissellement indicatif), pour Excel.');
+    if (ds.plan && on('arbres') && TopoPlan.count(ds.plan, 'arbres')) out.push('  arbres.csv : « n° X Y Zsol hauteur diamètre » séparés par un espace.');
+    out.push('  geojson/ : couches pour QGIS (EPSG:2154). geojson/emprise.geojson se rouvre dans ExporTopo (« Ouvrir un fichier d\'emprise »).',
       '',
       'CALQUES DU DXF',
       '  ' + LY.EMPRISE[0] + ' : limite de la zone',
@@ -1300,11 +1725,34 @@
 
   // Le jeu de données préparé n'est plus valable si un réglage change.
   document.querySelectorAll('.panel input, .panel select').forEach((el) => el.addEventListener('change', () => {
-    if (el.closest('#searchForm') || el.closest('#bboxDetails')) return;
+    if (el.closest('#searchForm') || el.closest('#bboxDetails') || el.closest('#hist') || el.id === 'affaire') return;
     state.ds = null;
   }));
 
+  /* ------------------------------------------------------------------ */
+  /* Nouvelle version publiée : proposer le rechargement                 */
+  /* ------------------------------------------------------------------ */
+  // GitHub Pages garde les fichiers 10 min en cache : version.json est lu sans cache et,
+  // si elle diffère, un bandeau propose de recharger la page à une adresse neuve (?v=).
+  let lastCheck = 0;
+  async function checkVersion() {
+    if (location.protocol === 'file:' || Date.now() - lastCheck < 5 * 60000) return;
+    lastCheck = Date.now();
+    try {
+      const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const js = await r.json();
+      if (!js.version || js.version === T.VERSION) return;
+      $('updateTxt').textContent = 'Nouvelle version v' + js.version + ' disponible (vous avez la v' + T.VERSION + ').';
+      $('updateBar').hidden = false;
+      $('updateBtn').onclick = () => { location.replace(location.pathname + '?v=' + encodeURIComponent(js.version) + location.hash); };
+    } catch (e) { /* hors ligne : rien à signaler */ }
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkVersion(); });
+  checkVersion();
+
   $('appVersion').textContent = 'v' + T.VERSION + ' · MIT';
+  renderHist();
   renderZone();
-  window.TopoApp = { state, setZone, map, openPreview, layerDefs };
+  window.TopoApp = { state, setZone, map, openPreview, layerDefs, histLoad, histSave, restoreZone };
 })();

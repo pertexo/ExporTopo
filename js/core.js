@@ -11,7 +11,7 @@
   'use strict';
 
   /** Numéro de version unique (interface, LandXML, LISEZMOI). À incrémenter à chaque modification. */
-  const VERSION = '1.4';
+  const VERSION = '1.5';
   const NODATA = -99999;
 
   function isValid(z) {

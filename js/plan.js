@@ -893,18 +893,46 @@
 
   const KIND_KEY = { talus: 'talus', fosse: 'fosses', crete: 'cretes', extreme: 'extremes', arbre: 'arbres', haie: 'haies', massif: 'massifs', mur: 'murs', constr: 'constructions', batiment: 'batCotes' };
 
+  /**
+   * Types d'objets ajoutés par d'autres modules (surfaces, changements) :
+   * { key(it), dist(it, x, y, tol), dxf(dxf, it, ctx), feature(it) -> [nom, Feature], layers: [[nom, couleur, type de trait]] }
+   */
+  const EXT = {};
+  function register(kind, h) { EXT[kind] = h; }
+  function keyOf(it) { const e = EXT[it.kind]; return e ? e.key(it) : KIND_KEY[it.kind]; }
+
   function count(plan, key) {
     if (!plan) return 0;
     let n = 0;
-    for (const it of plan.items) if (!it.deleted && KIND_KEY[it.kind] === key) n++;
+    for (const it of plan.items) if (!it.deleted && keyOf(it) === key) n++;
     return n;
+  }
+
+  /** Nombre d'objets d'un niveau de confiance donné ('bonne', 'moyenne', 'faible') parmi les calques retenus. */
+  function countConf(plan, level, isOn) {
+    if (!plan) return 0;
+    let n = 0;
+    for (const it of plan.items) if (!it.deleted && it.conf === level && (!isOn || isOn(keyOf(it)))) n++;
+    return n;
+  }
+
+  /** Point de repère d'un objet (symbole de confiance, étiquette). */
+  function anchor(it) {
+    if (it.x !== undefined) return [it.x, it.y];
+    if (it.lx !== undefined) return [it.lx, it.ly];
+    const mid = (p) => { const q = pointAt(p, polyLength(p) / 2); return [q.x, q.y]; };
+    if (it.coords) return mid(it.coords);
+    if (it.paths && it.paths[0]) return mid(it.paths[0]);
+    if (it.lines && it.lines[0]) return mid(it.lines[0].coords);
+    if (it.rings && it.rings[0]) return T.labelPoint(it.rings[0]);
+    return null;
   }
 
   /** Élément le plus proche de (x, y) à moins de tol mètres, parmi les calques affichés. */
   function hitTest(plan, x, y, tol, isOn) {
     let best = null, bd = Infinity;
     for (const it of plan.items) {
-      if (it.deleted || !isOn(KIND_KEY[it.kind])) continue;
+      if (it.deleted || !isOn(keyOf(it))) continue;
       let d = Infinity;
       switch (it.kind) {
         case 'arbre': d = Math.max(0, Math.hypot(it.x - x, it.y - y) - it.d / 2); break;
@@ -913,6 +941,7 @@
         case 'fosse': case 'crete': case 'mur': case 'constr': d = distToPoly(x, y, it.coords, false); break;
         case 'haie': for (const p of it.paths) d = Math.min(d, distToPoly(x, y, p, false)); break;
         case 'massif': for (const r of it.rings) d = Math.min(d, distToPoly(x, y, r, true)); break;
+        default: if (EXT[it.kind]) d = EXT[it.kind].dist(it, x, y, tol);
       }
       if (it.kind === 'arbre') d = Math.max(0, d - tol * 0.5);
       if (d <= tol && d < bd) { bd = d; best = it; }
@@ -934,6 +963,7 @@
     MASSIF: ['VEG_MASSIFS_BOISES', 82, 'TIRETS'], MASSIF_TXT: ['VEG_MASSIFS_TEXTE', 82],
     MUR: ['OUV_MURS_CLOTURES_LIDAR', 8], MUR_TXT: ['OUV_MURS_TEXTE', 8], CONSTR: ['OUV_CONSTRUCTIONS_IGN', 9],
     BAT: ['BAT_COTES', 7],
+    CONF_FAIBLE: ['CTRL_A_VERIFIER', 1], CONF_MOY: ['CTRL_CONFIANCE_MOYENNE', 30],
     CARTOUCHE: ['CARTOUCHE', 7], LEGENDE: ['LEGENDE', 7], NORD: ['NORD', 7], QUADRILLAGE: ['QUADRILLAGE', 8],
   };
 
@@ -966,11 +996,13 @@
   function writeDXF(dxf, plan, o) {
     const th = o.th, ts = th * 0.8;
     for (const k in L) dxf.layer(L[k][0], L[k][1], L[k][2]);
+    for (const k in EXT) for (const l of EXT[k].layers || []) dxf.layer(l[0], l[1], l[2]);
     dxf.ltscale = Math.max(0.2, o.scale / 500);
     const on = (k) => o.on(k);
     let treeBlockDone = false;
     for (const it of plan.items) {
-      if (it.deleted || !on(KIND_KEY[it.kind])) continue;
+      if (it.deleted || !on(keyOf(it))) continue;
+      if (EXT[it.kind]) { EXT[it.kind].dxf(dxf, it, { th, ts, on, scale: o.scale }); continue; }
       switch (it.kind) {
         case 'talus':
           for (const l of it.lines) dxf.poly3d(l.coords, false, l.type === 'crete' ? L.TALUS_CRETE[0] : L.TALUS_PIED[0]);
@@ -1034,6 +1066,21 @@
           break;
       }
     }
+    // Indice de confiance : cercle rouge « à vérifier » (avec le motif), cercle orange « confiance moyenne ».
+    if (on('confiance')) {
+      for (const it of plan.items) {
+        if (it.deleted || !it.conf || it.conf === 'bonne' || !on(keyOf(it))) continue;
+        const a = anchor(it);
+        if (!a) continue;
+        const faible = it.conf === 'faible';
+        const r = Math.max(faible ? th * 2.5 : th * 1.5, it.kind === 'arbre' ? it.d / 2 + th * 0.5 : 0);
+        dxf.circle(a[0], a[1], 0, r, faible ? L.CONF_FAIBLE[0] : L.CONF_MOY[0]);
+        if (faible) {
+          dxf.text(a[0] + r * 0.75, a[1] + r * 0.75, 0, ts * 1.2, '?', L.CONF_FAIBLE[0], 0, 'left', 0.85);
+          if (it.confWhy) dxf.text(a[0], a[1] - r - ts * 1.4, 0, ts * 0.8, 'À vérifier : ' + it.confWhy, L.CONF_FAIBLE[0], 0, 'center', 0.85);
+        }
+      }
+    }
     if (o.layout) writeLayout(dxf, plan, o);
   }
 
@@ -1082,12 +1129,17 @@
       const rows = [
         [5, 'PLAN DU TERRAIN NATUREL'],
         [2.5, 'Établi à partir de données publiques IGN — non levé sur site'],
+      ];
+      if (lay.affaire) rows.push([3.5, 'Affaire : ' + lay.affaire]);
+      rows.push(
         [3, (lay.commune || 'Commune non déterminée')],
         [2.5, 'Échelle 1/' + o.scale + ' — Export du ' + lay.date],
         [2.5, 'RGF93 v1 / Lambert-93 (EPSG:2154) — Altitudes NGF-IGN69'],
-      ];
+      );
       for (const s of lay.dates || []) rows.push([2.2, s]);
-      rows.push([2.2, 'Sources : IGN — LiDAR HD, BD TOPO, Parcellaire Express, BD ORTHO'], [2.2, 'Licence Ouverte Etalab 2.0 — « Source : IGN »'], [2.2, 'ExporTopo v' + lay.version + ' — By CHB']);
+      rows.push([2.2, lay.sources || 'Sources : IGN — LiDAR HD, BD TOPO, Parcellaire Express, BD ORTHO']);
+      for (const s of lay.notes || []) rows.push([2.2, s]);
+      rows.push([2.2, 'Licence Ouverte Etalab 2.0 — « Source : IGN »'], [2.2, 'ExporTopo v' + lay.version + ' — By CHB']);
       const H = rows.reduce((a, r) => a + r[0] * 1.8 * k, 0) + 2 * pad;
       rect(dxf, X0, y - H, X0 + W, y, Lc);
       let cy = y - pad;
@@ -1113,13 +1165,20 @@
       if (has('massifs')) entries.push(['Massif boisé', 'massif']);
       if (has('murs')) entries.push(['Mur ou clôture détecté (indicatif)', 'mur']);
       if (has('constructions')) entries.push(['Construction linéaire IGN (mur, clôture…)', 'constr']);
+      for (const e of lay.extraLegend || []) entries.push(e);
       if (!entries.length) return;
       dxf.text(X0, y - 4 * k, 0, 3.5 * k, 'LÉGENDE', Ll, 0, 'left', 0.85);
       y -= 9 * k;
       const top = y + 3 * k;
-      for (const [label, kind] of entries) {
+      for (const [label, kind, layer] of entries) {
         const cy = y - rowH / 2;
         switch (kind) {
+          case 'surf': rect(dxf, sx + 2 * k, cy - 2 * k, sx + sw - 2 * k, cy + 2 * k, layer || Ll); break;
+          case 'ctrl': dxf.circle(sx + sw / 2, cy, 0, 2.2 * k, layer || Ll); break;
+          case 'chg':
+            dxf.poly2d([[sx + sw / 2, cy + 2.5 * k], [sx + sw / 2 - 2.6 * k, cy - 2 * k], [sx + sw / 2 + 2.6 * k, cy - 2 * k]], true, layer || Ll, 0);
+            dxf.text(sx + sw / 2, cy - 1.6 * k, 0, 2.6 * k, '!', layer || Ll, 0, 'center', 0.85);
+            break;
           case 'talus':
             dxf.line([sx, cy + 2 * k], [sx + sw, cy + 2 * k], Ll);
             for (let i = 0; i < 6; i++) dxf.line([sx + (i + 0.5) * sw / 6, cy + 2 * k], [sx + (i + 0.5) * sw / 6, cy + 2 * k - (i % 2 ? 2 : 4) * k], Ll);
@@ -1150,10 +1209,14 @@
 
   function toFeatures(plan, isOn) {
     const out = {};
-    const push = (name, f) => { (out[name] = out[name] || []).push(f); };
     for (const it of plan.items) {
-      if (it.deleted || !isOn(KIND_KEY[it.kind])) continue;
+      if (it.deleted || !isOn(keyOf(it))) continue;
+      const push = (name, f) => {
+        if (it.conf) { f.properties.confiance = it.conf; if (it.confWhy) f.properties.confiance_motif = it.confWhy; }
+        (out[name] = out[name] || []).push(f);
+      };
       const line = (c) => ({ type: 'LineString', coordinates: c.map((q) => q.map(r3)) });
+      if (EXT[it.kind]) { const r = EXT[it.kind].feature(it); if (r) push(r[0], r[1]); continue; }
       switch (it.kind) {
         case 'talus': for (const l of it.lines) push('talus', { type: 'Feature', properties: { type: l.type, hauteur: valid(it.h) ? r3(it.h) : null }, geometry: line(l.coords) }); break;
         case 'fosse': push('fosses_noues', { type: 'Feature', properties: { longueur: r3(it.len), sens: it.flow }, geometry: line(it.coords) }); break;
@@ -1181,6 +1244,7 @@
     return lines.join('\n') + (lines.length ? '\n' : '');
   }
 
-  return { SENSI, analyse, count, hitTest, writeDXF, toFeatures, treesTxt, KIND_KEY, LAYERS: L, polyLength, pointAt, readableAngle,
+  return { SENSI, analyse, count, countConf, hitTest, writeDXF, toFeatures, treesTxt, KIND_KEY, LAYERS: L, polyLength, pointAt, readableAngle,
+    register, keyOf, anchor, distToPoly, chaikin,
     _internal: { dilate, erode, components, thin, traceSkeleton, boxMean, extremeFilter, skeletonOf, chaikin } };
 });
